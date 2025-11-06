@@ -76,10 +76,15 @@ server <- function(input, output, session) {
           # Second attempt: read as all character columns
           read_sheet(input$selected_sheet, col_types = "c")
         }, error = function(e2) {
-          # Third attempt: read with skip_empty = FALSE
-          read_sheet(input$selected_sheet, skip_empty = FALSE)
+          # Third attempt: read with .name_repair
+          read_sheet(input$selected_sheet, .name_repair = "universal")
         })
       })
+      
+      # Handle empty data
+      if (is.null(data) || nrow(data) == 0) {
+        data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+      }
       
       # Convert all columns to character to ensure consistency
       data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
