@@ -4,6 +4,7 @@ library(googlesheets4)
 library(googledrive)
 library(jsonlite)
 library(httr)
+library(readr)
 
 # Create secret directory if it doesn't exist
 if (!dir.exists("secret")) {
@@ -65,47 +66,64 @@ server <- function(input, output, session) {
     })
   }
 
-  # Load data using Google Sheets API directly to bypass googlesheets4 type inference
+  # Load data using CSV export to completely bypass googlesheets4 type inference
   load_sheet_data <- function() {
-  req(current_sheet_id())
-  
-  tryCatch({
-    # Disable automatic type conversion by reading as all text
-    data <- range_read(
-      current_sheet_id(),
-      col_types = "c",  # Force all columns to character
-      .name_repair = "unique"
-    )
+    req(current_sheet_id())
     
-    # Handle empty sheets
-    if (is.null(data) || nrow(data) == 0) {
-      data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
-      showNotification("Sheet appears to be empty", type = "warning")
-    } else {
-      # Clean up data
-      data[is.na(data)] <- ""
-      data <- as.data.frame(data, stringsAsFactors = FALSE)
-    }
-    
-    sheet_data(data)
-    last_update(Sys.time())
-    showNotification(
-      paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), 
-      type = "message"
-    )
-    
-  }, error = function(e) {
-    showNotification(
-      paste("Error reading sheet:", e$message),
-      type = "error",
-      duration = 15
-    )
-    sheet_data(data.frame(
-      Error = paste("Could not load data:", e$message),
-      stringsAsFactors = FALSE
-    ))
-  })
-}
+    tryCatch({
+      # Method 1: Try to export as CSV and read that
+      csv_url <- paste0("https://docs.google.com/spreadsheets/d/", 
+                       current_sheet_id(), 
+                       "/export?format=csv")
+      
+      # Get the authenticated session
+      token <- gs4_token()
+      
+      # Make authenticated request to get CSV
+      response <- tryCatch({
+        GET(csv_url, config(token = token))
+      }, error = function(e) {
+        # Fallback: try the old method one more time
+        read_sheet(current_sheet_id(), col_types = "c", n_max = 1000)
+      })
+      
+      if (class(response)[1] == "response" && response$status_code == 200) {
+        # Parse CSV content
+        csv_content <- content(response, "text", encoding = "UTF-8")
+        data <- read_csv(csv_content, col_types = cols(.default = "c"), 
+                        show_col_types = FALSE, locale = locale(encoding = "UTF-8"))
+      } else {
+        # If CSV export failed, fall back to simplified read
+        data <- response  # This would be the fallback read_sheet result
+      }
+      
+      # Handle empty data
+      if (is.null(data) || nrow(data) == 0) {
+        data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+        showNotification("Sheet appears to be empty", type = "warning")
+      } else {
+        # Convert to data frame and clean
+        data <- as.data.frame(data, stringsAsFactors = FALSE)
+        
+        # Ensure all columns are character
+        data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
+        
+        # Clean up the data
+        data[is.na(data)] <- ""
+        names(data) <- make.names(names(data), unique = TRUE)
+        
+        # Remove completely empty rows
+        if (nrow(data) > 0) {
+          empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
+          if (any(!empty_rows)) {
+            data <- data[!empty_rows, , drop = FALSE]
+          }
+        }
+      }
+      
+      sheet_data(data)
+      last_update(Sys.time())
+      showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
       
     }, error = function(e) {
       showNotification(
@@ -116,7 +134,7 @@ server <- function(input, output, session) {
       # Create a diagnostic data frame
       sheet_data(data.frame(
         Error = paste("Could not load data:", e$message),
-        Help = "Try refreshing or check if sheet has unusual formatting",
+        Help = "Check sheet permissions and formatting",
         stringsAsFactors = FALSE
       ))
     })
@@ -191,7 +209,7 @@ server <- function(input, output, session) {
       names(new_row) <- cols
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
-      # Append to sheet
+      # Append to sheet - this should still work even if reading doesn't
       sheet_append(current_sheet_id(), new_row_df)
       
       showNotification("Row added successfully!", type = "message")
