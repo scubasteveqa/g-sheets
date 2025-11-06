@@ -72,20 +72,59 @@ server <- function(input, output, session) {
   req(current_sheet_id())
 
   tryCatch({
-    data <- googlesheets4::range_read(
-      ss = current_sheet_id(),
-      range = NULL,  # Read all data
-      col_types = "c"  # All columns as character to avoid parsing issues
+    # Get credentials from environment
+    creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
+    creds <- jsonlite::fromJSON(creds_json)
+    
+    # Create OAuth token manually
+    token <- httr::oauth_service_token(
+      endpoint = httr::oauth_endpoints("google"),
+      secrets = creds,
+      scope = "https://www.googleapis.com/auth/spreadsheets"
     )
-
-    if (is.null(data) || nrow(data) == 0) {
-      data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
+    
+    # Direct API call
+    api_url <- paste0(
+      "https://sheets.googleapis.com/v4/spreadsheets/",
+      current_sheet_id(),
+      "/values/A:Z"
+    )
+    
+    response <- httr::GET(
+      api_url,
+      httr::config(token = token)
+    )
+    
+    if (httr::status_code(response) == 200) {
+      content_data <- httr::content(response, "parsed")
+      
+      if (!is.null(content_data$values) && length(content_data$values) > 0) {
+        values <- content_data$values
+        headers <- values[[1]]
+        data_rows <- values[-1]
+        
+        max_cols <- length(headers)
+        data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
+        
+        for (i in seq_along(data_rows)) {
+          row <- data_rows[[i]]
+          data_matrix[i, seq_along(row)] <- row
+        }
+        
+        data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+        names(data) <- make.names(headers, unique = TRUE)
+      } else {
+        data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
+      }
+      
+      sheet_data(data)
+      last_update(Sys.time())
+      showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+    } else {
+      error_msg <- httr::content(response, "text", encoding = "UTF-8")
+      stop(paste("API error:", httr::status_code(response), error_msg))
     }
-
-    sheet_data(data)
-    last_update(Sys.time())
-    showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-
+    
   }, error = function(e) {
     showNotification(paste("Error:", e$message), type = "error", duration = 10)
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
