@@ -69,15 +69,28 @@ server <- function(input, output, session) {
     tryCatch({
       # Try different approaches to read the sheet
       data <- tryCatch({
-        # First attempt: read with automatic column type detection
-        read_sheet(input$selected_sheet)
+        # First attempt: use range_read with no column type specification
+        range_read(input$selected_sheet)
       }, error = function(e1) {
         tryCatch({
-          # Second attempt: read as all character columns
-          read_sheet(input$selected_sheet, col_types = "c")
+          # Second attempt: read specific range starting from A1
+          range_read(input$selected_sheet, range = "A:Z")
         }, error = function(e2) {
-          # Third attempt: read with .name_repair
-          read_sheet(input$selected_sheet, .name_repair = "universal")
+          tryCatch({
+            # Third attempt: read with basic read_sheet and handle the error differently
+            gs4_get(input$selected_sheet) # This will fail early if sheet is problematic
+            read_sheet(input$selected_sheet, range = "A1:Z1000")
+          }, error = function(e3) {
+            # Fourth attempt: try to get sheet properties first
+            sheet_properties <- gs4_get(input$selected_sheet)
+            if (length(sheet_properties$sheets) > 0) {
+              # Read the first sheet by name
+              sheet_name <- sheet_properties$sheets[[1]]$properties$title
+              read_sheet(input$selected_sheet, sheet = sheet_name)
+            } else {
+              stop("No readable sheets found")
+            }
+          })
         })
       })
       
@@ -87,10 +100,20 @@ server <- function(input, output, session) {
       }
       
       # Convert all columns to character to ensure consistency
-      data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
+      data <- data.frame(lapply(data, function(x) {
+        if (is.list(x)) {
+          # Handle list columns by converting to character
+          sapply(x, function(y) if(is.null(y)) "" else as.character(y))
+        } else {
+          as.character(x)
+        }
+      }), stringsAsFactors = FALSE)
       
       # Replace NA values with empty strings for display
       data[is.na(data)] <- ""
+      
+      # Ensure column names are valid
+      names(data) <- make.names(names(data), unique = TRUE)
       
       sheet_data(data)
       last_update(Sys.time())
@@ -101,6 +124,8 @@ server <- function(input, output, session) {
         type = "error",
         duration = 10
       )
+      # Set empty data frame on error
+      sheet_data(data.frame(Column1 = character(0), stringsAsFactors = FALSE))
     })
   }
 
@@ -138,6 +163,10 @@ server <- function(input, output, session) {
   output$add_row_ui <- renderUI({
     req(sheet_data())
     cols <- names(sheet_data())
+    
+    if (length(cols) == 0) {
+      return(p("No columns available. Please select a valid sheet."))
+    }
     
     tagList(
       lapply(cols, function(col) {
@@ -184,7 +213,11 @@ server <- function(input, output, session) {
 
   # Display sheet data
   output$sheet_data <- renderTable({
-    sheet_data()
+    data <- sheet_data()
+    if (is.null(data) || nrow(data) == 0) {
+      return(data.frame("No Data" = "Select a sheet and click Reload Data"))
+    }
+    data
   }, na = "")
 
   output$last_updated <- renderText({
