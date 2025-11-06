@@ -27,11 +27,10 @@ ui <- page_sidebar(
   title = "Google Sheets Editor",
   sidebar = sidebar(
     h4("Sheet Selection"),
-    textInput("sheet_url", "Paste Google Sheet URL:", 
-              value = "", 
-              placeholder = "https://docs.google.com/spreadsheets/d/..."),
+    uiOutput("sheet_selector"),
     hr(),
-    actionButton("load_sheet", "Load Sheet", class = "btn-primary"),
+    actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
+    actionButton("load_sheet", "Load Sheet Data", class = "btn-primary"),
     hr(),
     h4("Add New Row"),
     uiOutput("add_row_ui"),
@@ -46,27 +45,32 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
 
+  all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
   current_sheet_id <- reactiveVal(NULL)
 
-  # Extract sheet ID from URL
-  extract_sheet_id <- function(url) {
-    if (grepl("docs.google.com/spreadsheets", url)) {
-      # Extract ID from URL
-      id <- regmatches(url, regexpr("/spreadsheets/d/([a-zA-Z0-9-_]+)", url))
-      id <- gsub("/spreadsheets/d/", "", id)
-      return(id)
-    }
-    return(url) # Assume it's already an ID
+  # Load list of accessible sheets
+  load_sheet_list <- function() {
+    tryCatch({
+      sheets <- gs4_find()
+      all_sheets(sheets)
+      showNotification("Sheet list loaded!", type = "message")
+    }, error = function(e) {
+      showNotification(
+        paste("Error loading sheets:", e$message),
+        type = "error"
+      )
+    })
   }
 
-  # Load data from sheet
+  # Load data from sheet (defaulting to first tab)
   load_sheet_data <- function() {
     req(current_sheet_id())
     
     tryCatch({
       # Simple approach: read all data as character to avoid type issues
+      # This will default to the first sheet/tab
       data <- read_sheet(current_sheet_id(), col_types = "c")
       
       # Handle empty data
@@ -98,12 +102,34 @@ server <- function(input, output, session) {
     })
   }
 
+  # Load sheets on startup
+  observe({
+    load_sheet_list()
+  })
+
+  # Render sheet selector dropdown
+  output$sheet_selector <- renderUI({
+    req(all_sheets())
+    selectInput(
+      "selected_sheet",
+      "Select a Sheet:",
+      choices = setNames(all_sheets()$id, all_sheets()$name)
+    )
+  })
+
+  # Update current sheet ID when selection changes
+  observeEvent(input$selected_sheet, {
+    current_sheet_id(input$selected_sheet)
+  })
+
+  # Refresh sheet list button
+  observeEvent(input$refresh_sheets, {
+    load_sheet_list()
+  })
+
   # Load sheet button
   observeEvent(input$load_sheet, {
-    req(input$sheet_url)
-    
-    sheet_id <- extract_sheet_id(input$sheet_url)
-    current_sheet_id(sheet_id)
+    req(current_sheet_id())
     load_sheet_data()
   })
 
@@ -113,7 +139,7 @@ server <- function(input, output, session) {
     cols <- names(sheet_data())
     
     if (length(cols) == 0 || cols[1] == "Error") {
-      return(p("No columns available. Please load a valid sheet first."))
+      return(p("No columns available. Please select a sheet and load data first."))
     }
     
     tagList(
@@ -145,7 +171,7 @@ server <- function(input, output, session) {
       names(new_row) <- cols
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
-      # Append to sheet
+      # Append to sheet (will use first tab by default)
       sheet_append(current_sheet_id(), new_row_df)
       
       showNotification("Row added successfully!", type = "message")
@@ -175,7 +201,7 @@ server <- function(input, output, session) {
   output$sheet_data <- renderTable({
     data <- sheet_data()
     if (is.null(data) || nrow(data) == 0) {
-      return(data.frame("Message" = "Enter a Google Sheet URL and click Load Sheet", stringsAsFactors = FALSE))
+      return(data.frame("Message" = "Select a sheet and click Load Sheet Data", stringsAsFactors = FALSE))
     }
     data
   }, na = "")
@@ -184,7 +210,7 @@ server <- function(input, output, session) {
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
     } else {
-      "Enter a sheet URL to load data"
+      "Select a sheet to load data"
     }
   })
 }
