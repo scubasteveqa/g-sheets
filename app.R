@@ -70,7 +70,7 @@ server <- function(input, output, session) {
   load_sheet_data <- function() {
     req(input$selected_sheet)
     tryCatch({
-      data <- read_sheet(input$selected_sheet)
+      data <- read_sheet(input$selected_sheet, col_types = "c")
       sheet_data(data)
       last_update(Sys.time())
       showNotification("Data loaded successfully!", type = "message")
