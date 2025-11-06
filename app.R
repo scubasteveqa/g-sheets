@@ -153,7 +153,7 @@ server <- function(input, output, session) {
   }
   
   # Load sheets on startup
-observe({
+observeEvent(TRUE, {
   load_sheet_list()
 }, once = TRUE)
   
