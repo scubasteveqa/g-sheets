@@ -72,66 +72,45 @@ server <- function(input, output, session) {
   req(current_sheet_id())
 
   tryCatch({
-    token <- gs4_token()
-    
-    # Get the access token using gargle's method
-    access_token <- token$credentials$access_token
-    
-    # If token is NULL or expired, refresh it
-    if (is.null(access_token)) {
-      gs4_auth(path = "secret/trackingauth.json")
-      token <- gs4_token()
-      access_token <- token$credentials$access_token
-    }
-
-    # Direct API call to Google Sheets API v4
-    api_url <- paste0(
-      "https://sheets.googleapis.com/v4/spreadsheets/",
-      current_sheet_id(),
-      "/values/Africa!A:Z"
+    # Use googlesheets4's request wrapper which handles auth automatically
+    response <- googlesheets4::request_make(
+      googlesheets4::request_generate(
+        endpoint = "sheets.spreadsheets.values.get",
+        params = list(
+          spreadsheetId = current_sheet_id(),
+          range = "Africa!A:Z"
+        )
+      )
     )
 
-    response <- httr::GET(
-      api_url,
-      httr::add_headers(Authorization = paste("Bearer", access_token))
-    )
+    if (!is.null(response$values) && length(response$values) > 0) {
+      values <- response$values
+      headers <- values[[1]]
+      data_rows <- values[-1]
 
-    if (httr::status_code(response) == 200) {
-      content_data <- httr::content(response, "parsed")
+      max_cols <- length(headers)
+      data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
 
-      if (!is.null(content_data$values) && length(content_data$values) > 0) {
-        values <- content_data$values
-        headers <- values[[1]]
-        data_rows <- values[-1]
-
-        max_cols <- length(headers)
-        data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
-
-        for (i in seq_along(data_rows)) {
-          row <- data_rows[[i]]
-          data_matrix[i, seq_along(row)] <- row
-        }
-
-        data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-        names(data) <- make.names(headers, unique = TRUE)
-      } else {
-        data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
+      for (i in seq_along(data_rows)) {
+        row <- data_rows[[i]]
+        data_matrix[i, seq_along(row)] <- row
       }
 
-      sheet_data(data)
-      last_update(Sys.time())
-      showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+      data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+      names(data) <- make.names(headers, unique = TRUE)
     } else {
-      error_msg <- httr::content(response, "text", encoding = "UTF-8")
-      stop(paste("API error:", httr::status_code(response), error_msg))
+      data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
     }
+
+    sheet_data(data)
+    last_update(Sys.time())
+    showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
 
   }, error = function(e) {
     showNotification(paste("Error:", e$message), type = "error", duration = 10)
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
-
 
   # Load sheets on startup
   observe({
