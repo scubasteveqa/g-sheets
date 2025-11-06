@@ -27,11 +27,11 @@ ui <- page_sidebar(
   title = "Google Sheets Editor",
   sidebar = sidebar(
     h4("Sheet Selection"),
-    uiOutput("sheet_selector"),
-    textInput("sheet_name", "Sheet Name/Tab:", value = "", placeholder = "Leave empty for first sheet"),
+    textInput("sheet_url", "Paste Google Sheet URL:", 
+              value = "", 
+              placeholder = "https://docs.google.com/spreadsheets/d/..."),
     hr(),
-    actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
-    actionButton("refresh_data", "Reload Data", class = "btn-primary"),
+    actionButton("load_sheet", "Load Sheet", class = "btn-primary"),
     hr(),
     h4("Add New Row"),
     uiOutput("add_row_ui"),
@@ -46,68 +46,35 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
 
-  all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
+  current_sheet_id <- reactiveVal(NULL)
 
-  # Load list of accessible sheets
-  load_sheet_list <- function() {
-    tryCatch({
-      sheets <- gs4_find()
-      all_sheets(sheets)
-      showNotification("Sheet list loaded!", type = "message")
-    }, error = function(e) {
-      showNotification(
-        paste("Error loading sheets:", e$message),
-        type = "error"
-      )
-    })
+  # Extract sheet ID from URL
+  extract_sheet_id <- function(url) {
+    if (grepl("docs.google.com/spreadsheets", url)) {
+      # Extract ID from URL
+      id <- regmatches(url, regexpr("/spreadsheets/d/([a-zA-Z0-9-_]+)", url))
+      id <- gsub("/spreadsheets/d/", "", id)
+      return(id)
+    }
+    return(url) # Assume it's already an ID
   }
 
-  # Load data using a simplified approach that avoids type inference
+  # Load data from sheet
   load_sheet_data <- function() {
-    req(input$selected_sheet)
-    
-    # Determine sheet name/tab
-    sheet_name <- if (input$sheet_name != "") input$sheet_name else NULL
+    req(current_sheet_id())
     
     tryCatch({
-      # Try reading without any col_types specification first
-      data <- tryCatch({
-        if (!is.null(sheet_name)) {
-          read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z1000")
-        } else {
-          read_sheet(input$selected_sheet, range = "A1:Z1000")
-        }
-      }, error = function(e1) {
-        # If that fails, try with explicit character types but smaller range
-        tryCatch({
-          if (!is.null(sheet_name)) {
-            read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z100", col_types = "c")
-          } else {
-            read_sheet(input$selected_sheet, range = "A1:Z100", col_types = "c")
-          }
-        }, error = function(e2) {
-          # Final fallback: try very small range
-          if (!is.null(sheet_name)) {
-            read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z10")
-          } else {
-            read_sheet(input$selected_sheet, range = "A1:Z10")
-          }
-        })
-      })
+      # Simple approach: read all data as character to avoid type issues
+      data <- read_sheet(current_sheet_id(), col_types = "c")
       
       # Handle empty data
       if (is.null(data) || nrow(data) == 0) {
         data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
       } else {
-        # Convert all columns to character to ensure consistency
-        data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
-        
-        # Replace NA values with empty strings
+        # Clean up the data
         data[is.na(data)] <- ""
-        
-        # Clean column names
         names(data) <- make.names(names(data), unique = TRUE)
         
         # Remove completely empty rows
@@ -131,35 +98,12 @@ server <- function(input, output, session) {
     })
   }
 
-  # Load sheets on startup
-  observe({
-    load_sheet_list()
-  })
-
-  # Render sheet selector dropdown
-  output$sheet_selector <- renderUI({
-    req(all_sheets())
-    selectInput(
-      "selected_sheet",
-      "Select a Sheet:",
-      choices = setNames(all_sheets()$id, all_sheets()$name)
-    )
-  })
-
-  # Auto-load data when sheet is selected
-  observeEvent(input$selected_sheet, {
-    if (!is.null(input$selected_sheet)) {
-      load_sheet_data()
-    }
-  }, ignoreInit = TRUE)
-
-  # Refresh sheet list button
-  observeEvent(input$refresh_sheets, {
-    load_sheet_list()
-  })
-
-  # Reload data button
-  observeEvent(input$refresh_data, {
+  # Load sheet button
+  observeEvent(input$load_sheet, {
+    req(input$sheet_url)
+    
+    sheet_id <- extract_sheet_id(input$sheet_url)
+    current_sheet_id(sheet_id)
     load_sheet_data()
   })
 
@@ -176,13 +120,15 @@ server <- function(input, output, session) {
       lapply(cols, function(col) {
         textInput(paste0("col_", col), label = col, value = "")
       }),
-      actionButton("add_row", "Add Row", class = "btn-success")
+      actionButton("add_row", "Add Row", class = "btn-success"),
+      br(),
+      actionButton("refresh_data", "Refresh Data", class = "btn-secondary")
     )
   })
 
   # Add new row to sheet
   observeEvent(input$add_row, {
-    req(sheet_data(), input$selected_sheet)
+    req(sheet_data(), current_sheet_id())
     
     tryCatch({
       # Collect input values
@@ -200,12 +146,7 @@ server <- function(input, output, session) {
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
       # Append to sheet
-      sheet_name <- if (input$sheet_name != "") input$sheet_name else NULL
-      if (!is.null(sheet_name)) {
-        sheet_append(input$selected_sheet, new_row_df, sheet = sheet_name)
-      } else {
-        sheet_append(input$selected_sheet, new_row_df)
-      }
+      sheet_append(current_sheet_id(), new_row_df)
       
       showNotification("Row added successfully!", type = "message")
       
@@ -225,11 +166,16 @@ server <- function(input, output, session) {
     })
   })
 
+  # Refresh data button
+  observeEvent(input$refresh_data, {
+    load_sheet_data()
+  })
+
   # Display sheet data
   output$sheet_data <- renderTable({
     data <- sheet_data()
     if (is.null(data) || nrow(data) == 0) {
-      return(data.frame("Message" = "Select a sheet and click Reload Data", stringsAsFactors = FALSE))
+      return(data.frame("Message" = "Enter a Google Sheet URL and click Load Sheet", stringsAsFactors = FALSE))
     }
     data
   }, na = "")
@@ -238,7 +184,7 @@ server <- function(input, output, session) {
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
     } else {
-      "Select a sheet to load data"
+      "Enter a sheet URL to load data"
     }
   })
 }
