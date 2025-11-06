@@ -81,13 +81,13 @@ server <- function(input, output, session) {
       "/values/Africa!A:Z"
     )
 
-    response <- GET(
+    response <- httr::GET(
       api_url,
-      httr::config(token = token)
+      httr::add_headers(Authorization = paste("Bearer", token$credentials$access_token))
     )
 
-    if (status_code(response) == 200) {
-      content_data <- content(response, "parsed")
+    if (httr::status_code(response) == 200) {
+      content_data <- httr::content(response, "parsed")
 
       if (!is.null(content_data$values) && length(content_data$values) > 0) {
         values <- content_data$values
@@ -112,7 +112,7 @@ server <- function(input, output, session) {
       last_update(Sys.time())
       showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
     } else {
-      stop(paste("API error:", status_code(response), content(response, "text")))
+      stop(paste("API error:", httr::status_code(response), httr::content(response, "text")))
     }
 
   }, error = function(e) {
@@ -120,6 +120,7 @@ server <- function(input, output, session) {
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
+
 
   # Load sheets on startup
   observe({
