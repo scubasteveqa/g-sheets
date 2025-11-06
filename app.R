@@ -72,12 +72,13 @@ server <- function(input, output, session) {
   req(current_sheet_id())
   
   tryCatch({
-    # Specify sheet name instead of range
-    data <- read_sheet(
-      current_sheet_id(),
+    # Use range_read with minimal processing
+    data <- range_read(
+      ss = current_sheet_id(),
       sheet = "Africa",
       col_types = "c",
-      .name_repair = "unique"
+      .name_repair = "unique",
+      skip_empty_rows = FALSE
     )
     
     if (is.null(data) || nrow(data) == 0) {
