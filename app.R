@@ -72,12 +72,12 @@ server <- function(input, output, session) {
   req(current_sheet_id())
   
   tryCatch({
-    # Use read_sheet with explicit options to avoid parsing issues
+    # Specify sheet name instead of range
     data <- read_sheet(
-      current_sheet_id(), 
-      range = "A:Z",
-      col_types = "c",  # Read all columns as character to avoid type detection
-      .name_repair = "unique"  # Handle duplicate column names
+      current_sheet_id(),
+      sheet = "Africa",
+      col_types = "c",
+      .name_repair = "unique"
     )
     
     if (is.null(data) || nrow(data) == 0) {
@@ -100,6 +100,7 @@ server <- function(input, output, session) {
     ))
   })
 }
+
 
   # Load sheets on startup
   observe({
