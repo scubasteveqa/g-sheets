@@ -73,7 +73,7 @@ server <- function(input, output, session) {
 
   tryCatch({
     token <- gs4_token()
-    
+
     # Direct API call to Google Sheets API v4
     api_url <- paste0(
       "https://sheets.googleapis.com/v4/spreadsheets/",
@@ -83,7 +83,7 @@ server <- function(input, output, session) {
 
     response <- GET(
       api_url,
-      config(token = token)
+      httr::config(token = token)
     )
 
     if (status_code(response) == 200) {
@@ -94,10 +94,9 @@ server <- function(input, output, session) {
         headers <- values[[1]]
         data_rows <- values[-1]
 
-        # Convert to data frame
         max_cols <- length(headers)
         data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
-        
+
         for (i in seq_along(data_rows)) {
           row <- data_rows[[i]]
           data_matrix[i, seq_along(row)] <- row
@@ -121,8 +120,6 @@ server <- function(input, output, session) {
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
-
-
 
   # Load sheets on startup
   observe({
