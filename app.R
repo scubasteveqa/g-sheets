@@ -64,7 +64,7 @@ server <- function(input, output, session) {
     })
   }
 
-  # Load data using a more robust approach
+  # Load data using a simplified approach that avoids type inference
   load_sheet_data <- function() {
     req(input$selected_sheet)
     
@@ -72,100 +72,49 @@ server <- function(input, output, session) {
     sheet_name <- if (input$sheet_name != "") input$sheet_name else NULL
     
     tryCatch({
-      # Strategy: Read a small sample first to get column structure
-      sample_data <- tryCatch({
+      # Try reading without any col_types specification first
+      data <- tryCatch({
         if (!is.null(sheet_name)) {
-          range_read(input$selected_sheet, sheet = sheet_name, range = "A1:Z10", col_types = "c")
+          read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z1000")
         } else {
-          range_read(input$selected_sheet, range = "A1:Z10", col_types = "c")
+          read_sheet(input$selected_sheet, range = "A1:Z1000")
         }
       }, error = function(e1) {
-        # If that fails, try manual approach with range_read_values
+        # If that fails, try with explicit character types but smaller range
         tryCatch({
           if (!is.null(sheet_name)) {
-            raw_matrix <- range_read_values(input$selected_sheet, sheet = sheet_name, range = "A1:Z10")
+            read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z100", col_types = "c")
           } else {
-            raw_matrix <- range_read_values(input$selected_sheet, range = "A1:Z10")
-          }
-          
-          if (nrow(raw_matrix) > 0) {
-            # First row as column names
-            col_names <- as.character(raw_matrix[1, ])
-            # Remove empty column names
-            non_empty_cols <- which(col_names != "" & !is.na(col_names))
-            if (length(non_empty_cols) > 0) {
-              col_names <- col_names[non_empty_cols]
-              data_matrix <- raw_matrix[-1, non_empty_cols, drop = FALSE]
-              
-              # Convert to data frame
-              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-              names(data) <- make.names(col_names, unique = TRUE)
-              data
-            } else {
-              data.frame(Column1 = character(0), stringsAsFactors = FALSE)
-            }
-          } else {
-            data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+            read_sheet(input$selected_sheet, range = "A1:Z100", col_types = "c")
           }
         }, error = function(e2) {
-          stop(paste("Could not read sheet:", e2$message))
+          # Final fallback: try very small range
+          if (!is.null(sheet_name)) {
+            read_sheet(input$selected_sheet, sheet = sheet_name, range = "A1:Z10")
+          } else {
+            read_sheet(input$selected_sheet, range = "A1:Z10")
+          }
         })
       })
       
-      if (nrow(sample_data) > 0) {
-        # Now read the full data using the same method that worked
-        col_count <- ncol(sample_data)
-        col_letters <- LETTERS[1:min(col_count, 26)]  # Handle up to 26 columns
-        if (col_count > 26) col_letters <- c(col_letters, paste0("A", LETTERS[1:(col_count-26)]))
-        
-        full_range <- paste0("A1:", col_letters[col_count], "1000")  # Read up to 1000 rows
-        
-        full_data <- tryCatch({
-          if (!is.null(sheet_name)) {
-            range_read(input$selected_sheet, sheet = sheet_name, range = full_range, col_types = "c")
-          } else {
-            range_read(input$selected_sheet, range = full_range, col_types = "c")
-          }
-        }, error = function(e) {
-          # Fallback to manual method
-          if (!is.null(sheet_name)) {
-            raw_matrix <- range_read_values(input$selected_sheet, sheet = sheet_name, range = full_range)
-          } else {
-            raw_matrix <- range_read_values(input$selected_sheet, range = full_range)
-          }
-          
-          if (nrow(raw_matrix) > 0) {
-            col_names <- as.character(raw_matrix[1, ])
-            non_empty_cols <- which(col_names != "" & !is.na(col_names))
-            
-            if (length(non_empty_cols) > 0) {
-              col_names <- col_names[non_empty_cols]
-              data_matrix <- raw_matrix[-1, non_empty_cols, drop = FALSE]
-              
-              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-              names(data) <- make.names(col_names, unique = TRUE)
-              data
-            } else {
-              sample_data  # Return the sample if we can't read more
-            }
-          } else {
-            sample_data
-          }
-        })
-        
-        data <- full_data
+      # Handle empty data
+      if (is.null(data) || nrow(data) == 0) {
+        data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
       } else {
-        data <- sample_data
-      }
-      
-      # Clean up the data
-      data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
-      data[is.na(data)] <- ""
-      
-      # Remove completely empty rows
-      if (nrow(data) > 0) {
+        # Convert all columns to character to ensure consistency
+        data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
+        
+        # Replace NA values with empty strings
+        data[is.na(data)] <- ""
+        
+        # Clean column names
+        names(data) <- make.names(names(data), unique = TRUE)
+        
+        # Remove completely empty rows
         empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
-        data <- data[!empty_rows, , drop = FALSE]
+        if (any(!empty_rows)) {
+          data <- data[!empty_rows, , drop = FALSE]
+        }
       }
       
       sheet_data(data)
@@ -197,10 +146,8 @@ server <- function(input, output, session) {
     )
   })
 
-  # Auto-load data when sheet is selected (with delay to allow sheet_name input)
+  # Auto-load data when sheet is selected
   observeEvent(input$selected_sheet, {
-    # Give a small delay to allow manual sheet name entry
-    invalidateLater(1000, session)
     if (!is.null(input$selected_sheet)) {
       load_sheet_data()
     }
