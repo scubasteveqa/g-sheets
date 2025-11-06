@@ -72,13 +72,12 @@ server <- function(input, output, session) {
   req(current_sheet_id())
 
   tryCatch({
-    # Use googlesheets4's request wrapper which handles auth automatically
     response <- googlesheets4::request_make(
       googlesheets4::request_generate(
         endpoint = "sheets.spreadsheets.values.get",
         params = list(
           spreadsheetId = current_sheet_id(),
-          range = "Africa!A:Z"
+          range = "A:Z"  # No sheet name - reads first sheet
         )
       )
     )
