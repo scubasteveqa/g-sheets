@@ -152,10 +152,10 @@ server <- function(input, output, session) {
     })
   }
   
-  # Load sheets on startup and auto-select first one
-  observe({
-    load_sheet_list()
-  }) %>% bindEvent(once = TRUE)
+  # Load sheets on startup
+observe({
+  load_sheet_list()
+}, once = TRUE)
   
   # Auto-select first sheet after list loads
   observeEvent(all_sheets(), {
