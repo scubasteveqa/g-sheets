@@ -232,45 +232,47 @@ server <- function(input, output, session) {
   
   # Add new row to sheet with polling
   observeEvent(input$add_row, {
-    req(sheet_data(), current_sheet_id())
-    
-    tryCatch({
-      cols <- names(sheet_data())
-      if (any(cols %in% c("Error", "NoData"))) {
-        showNotification("Cannot add row: sheet not loaded properly", type = "error")
-        return()
-      }
-      
-      # Collect input values
-      new_row <- lapply(cols, function(col) {
-        val <- input[[paste0("col_", col)]]
-        if (is.null(val) || val == "") "" else val
-      })
-      names(new_row) <- cols
-      new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
-      
-      # Append to sheet
-      sheet_append(current_sheet_id(), new_row_df)
-      
-      showNotification("Row added! Refreshing data...", type = "message")
-      
-      # Clear inputs
-      lapply(cols, function(col) {
-        updateTextInput(session, paste0("col_", col), value = "")
-      })
-      
-      # Trigger polling with a short delay to allow Google Sheets to update
-      Sys.sleep(1)
-      poll_trigger(poll_trigger() + 1)
-      
-    }, error = function(e) {
-      showNotification(
-        paste("Error adding row:", e$message),
-        type = "error",
-        duration = 10
-      )
+  req(sheet_data(), current_sheet_id())
+
+  tryCatch({
+    cols <- names(sheet_data())
+    if (any(cols %in% c("Error", "NoData"))) {
+      showNotification("Cannot add row: sheet not loaded properly", type = "error")
+      return()
+    }
+
+    # Collect input values
+    new_row <- lapply(cols, function(col) {
+      val <- input[[paste0("col_", col)]]
+      if (is.null(val) || val == "") "" else val
     })
+    names(new_row) <- cols
+    new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
+
+    # Append to sheet
+    sheet_append(current_sheet_id(), new_row_df)
+
+    showNotification("Row added! Refreshing data...", type = "message")
+
+    # Clear inputs
+    lapply(cols, function(col) {
+      updateTextInput(session, paste0("col_", col), value = "")
+    })
+
+    # Poll with delays to allow Google Sheets to update
+    for (i in 1:5) {
+      Sys.sleep(2)
+      read_sheet_data()
+    }
+
+  }, error = function(e) {
+    showNotification(
+      paste("Error adding row:", e$message),
+      type = "error",
+      duration = 10
+    )
   })
+})
   
   # Display sheet data
   output$sheet_data <- renderTable({
