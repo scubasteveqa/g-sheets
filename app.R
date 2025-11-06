@@ -28,7 +28,7 @@ ui <- page_sidebar(
   sidebar = sidebar(
     h4("Sheet Selection"),
     uiOutput("sheet_selector"),
-    uiOutput("tab_selector"),
+    textInput("sheet_name", "Sheet Name/Tab:", value = "", placeholder = "Leave empty for first sheet"),
     hr(),
     actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
     actionButton("refresh_data", "Reload Data", class = "btn-primary"),
@@ -47,7 +47,6 @@ ui <- page_sidebar(
 server <- function(input, output, session) {
 
   all_sheets <- reactiveVal(NULL)
-  sheet_tabs <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
 
@@ -65,88 +64,103 @@ server <- function(input, output, session) {
     })
   }
 
-  # Load tabs for selected sheet
-  load_sheet_tabs <- function() {
-    req(input$selected_sheet)
-    tryCatch({
-      sheet_info <- gs4_get(input$selected_sheet)
-      tabs <- sapply(sheet_info$sheets, function(x) x$properties$title)
-      sheet_tabs(tabs)
-    }, error = function(e) {
-      showNotification(
-        paste("Error loading sheet tabs:", e$message),
-        type = "error"
-      )
-      sheet_tabs(c("Sheet1")) # Default fallback
-    })
-  }
-
-  # Load data from selected sheet with better error handling
+  # Load data using a more robust approach
   load_sheet_data <- function() {
     req(input$selected_sheet)
-    sheet_name <- if (!is.null(input$selected_tab)) input$selected_tab else NULL
+    
+    # Determine sheet name/tab
+    sheet_name <- if (input$sheet_name != "") input$sheet_name else NULL
     
     tryCatch({
-      # Use a completely different approach: read as raw values then convert
-      data <- tryCatch({
-        # Method 1: Read with explicit sheet name and range, all as text
+      # Strategy: Read a small sample first to get column structure
+      sample_data <- tryCatch({
         if (!is.null(sheet_name)) {
-          range_read(input$selected_sheet, sheet = sheet_name, col_types = "c", .name_repair = "universal")
+          range_read(input$selected_sheet, sheet = sheet_name, range = "A1:Z10", col_types = "c")
         } else {
-          range_read(input$selected_sheet, col_types = "c", .name_repair = "universal")
+          range_read(input$selected_sheet, range = "A1:Z10", col_types = "c")
         }
       }, error = function(e1) {
+        # If that fails, try manual approach with range_read_values
         tryCatch({
-          # Method 2: Use sheet_values to get raw values
           if (!is.null(sheet_name)) {
-            raw_values <- range_read_values(input$selected_sheet, sheet = sheet_name)
+            raw_matrix <- range_read_values(input$selected_sheet, sheet = sheet_name, range = "A1:Z10")
           } else {
-            raw_values <- range_read_values(input$selected_sheet)
+            raw_matrix <- range_read_values(input$selected_sheet, range = "A1:Z10")
           }
           
-          # Convert matrix to data frame
-          if (nrow(raw_values) > 0) {
-            col_names <- raw_values[1, ]
-            data_rows <- raw_values[-1, , drop = FALSE]
-            data <- as.data.frame(data_rows, stringsAsFactors = FALSE)
-            names(data) <- col_names
-            data
+          if (nrow(raw_matrix) > 0) {
+            # First row as column names
+            col_names <- as.character(raw_matrix[1, ])
+            # Remove empty column names
+            non_empty_cols <- which(col_names != "" & !is.na(col_names))
+            if (length(non_empty_cols) > 0) {
+              col_names <- col_names[non_empty_cols]
+              data_matrix <- raw_matrix[-1, non_empty_cols, drop = FALSE]
+              
+              # Convert to data frame
+              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+              names(data) <- make.names(col_names, unique = TRUE)
+              data
+            } else {
+              data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+            }
           } else {
             data.frame(Column1 = character(0), stringsAsFactors = FALSE)
           }
         }, error = function(e2) {
-          # Method 3: Try with a specific small range first
-          tryCatch({
-            if (!is.null(sheet_name)) {
-              range_read(input$selected_sheet, sheet = sheet_name, range = "A1:Z100", col_types = "c")
-            } else {
-              range_read(input$selected_sheet, range = "A1:Z100", col_types = "c")
-            }
-          }, error = function(e3) {
-            stop(paste("All read methods failed. Last error:", e3$message))
-          })
+          stop(paste("Could not read sheet:", e2$message))
         })
       })
       
-      # Handle empty data
-      if (is.null(data) || nrow(data) == 0) {
-        data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+      if (nrow(sample_data) > 0) {
+        # Now read the full data using the same method that worked
+        col_count <- ncol(sample_data)
+        col_letters <- LETTERS[1:min(col_count, 26)]  # Handle up to 26 columns
+        if (col_count > 26) col_letters <- c(col_letters, paste0("A", LETTERS[1:(col_count-26)]))
+        
+        full_range <- paste0("A1:", col_letters[col_count], "1000")  # Read up to 1000 rows
+        
+        full_data <- tryCatch({
+          if (!is.null(sheet_name)) {
+            range_read(input$selected_sheet, sheet = sheet_name, range = full_range, col_types = "c")
+          } else {
+            range_read(input$selected_sheet, range = full_range, col_types = "c")
+          }
+        }, error = function(e) {
+          # Fallback to manual method
+          if (!is.null(sheet_name)) {
+            raw_matrix <- range_read_values(input$selected_sheet, sheet = sheet_name, range = full_range)
+          } else {
+            raw_matrix <- range_read_values(input$selected_sheet, range = full_range)
+          }
+          
+          if (nrow(raw_matrix) > 0) {
+            col_names <- as.character(raw_matrix[1, ])
+            non_empty_cols <- which(col_names != "" & !is.na(col_names))
+            
+            if (length(non_empty_cols) > 0) {
+              col_names <- col_names[non_empty_cols]
+              data_matrix <- raw_matrix[-1, non_empty_cols, drop = FALSE]
+              
+              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+              names(data) <- make.names(col_names, unique = TRUE)
+              data
+            } else {
+              sample_data  # Return the sample if we can't read more
+            }
+          } else {
+            sample_data
+          }
+        })
+        
+        data <- full_data
+      } else {
+        data <- sample_data
       }
       
-      # Convert all columns to character and clean up
-      data <- data.frame(lapply(data, function(x) {
-        if (is.list(x)) {
-          sapply(x, function(y) if(is.null(y) || length(y) == 0) "" else as.character(y[1]))
-        } else {
-          as.character(x)
-        }
-      }), stringsAsFactors = FALSE)
-      
-      # Replace NA values with empty strings
+      # Clean up the data
+      data <- data.frame(lapply(data, as.character), stringsAsFactors = FALSE)
       data[is.na(data)] <- ""
-      
-      # Clean column names
-      names(data) <- make.names(names(data), unique = TRUE)
       
       # Remove completely empty rows
       if (nrow(data) > 0) {
@@ -156,15 +170,15 @@ server <- function(input, output, session) {
       
       sheet_data(data)
       last_update(Sys.time())
-      showNotification("Data loaded successfully!", type = "message")
+      showNotification(paste("Data loaded successfully! Rows:", nrow(data)), type = "message")
+      
     }, error = function(e) {
       showNotification(
         paste("Error reading sheet:", e$message),
         type = "error",
         duration = 10
       )
-      # Set empty data frame on error
-      sheet_data(data.frame(Column1 = character(0), stringsAsFactors = FALSE))
+      sheet_data(data.frame(Error = paste("Could not load data:", e$message), stringsAsFactors = FALSE))
     })
   }
 
@@ -183,25 +197,11 @@ server <- function(input, output, session) {
     )
   })
 
-  # Render tab selector dropdown
-  output$tab_selector <- renderUI({
-    req(sheet_tabs())
-    selectInput(
-      "selected_tab",
-      "Select a Tab:",
-      choices = sheet_tabs(),
-      selected = sheet_tabs()[1]
-    )
-  })
-
-  # Load tabs when sheet is selected
+  # Auto-load data when sheet is selected (with delay to allow sheet_name input)
   observeEvent(input$selected_sheet, {
-    load_sheet_tabs()
-  })
-
-  # Load data when sheet or tab is selected
-  observeEvent(c(input$selected_sheet, input$selected_tab), {
-    if (!is.null(input$selected_sheet) && !is.null(input$selected_tab)) {
+    # Give a small delay to allow manual sheet name entry
+    invalidateLater(1000, session)
+    if (!is.null(input$selected_sheet)) {
       load_sheet_data()
     }
   }, ignoreInit = TRUE)
@@ -221,8 +221,8 @@ server <- function(input, output, session) {
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0) {
-      return(p("No columns available. Please select a valid sheet and tab."))
+    if (length(cols) == 0 || cols[1] == "Error") {
+      return(p("No columns available. Please load a valid sheet first."))
     }
     
     tagList(
@@ -235,11 +235,16 @@ server <- function(input, output, session) {
 
   # Add new row to sheet
   observeEvent(input$add_row, {
-    req(sheet_data(), input$selected_sheet, input$selected_tab)
+    req(sheet_data(), input$selected_sheet)
     
     tryCatch({
       # Collect input values
       cols <- names(sheet_data())
+      if (cols[1] == "Error") {
+        showNotification("Cannot add row: sheet data not loaded properly", type = "error")
+        return()
+      }
+      
       new_row <- lapply(cols, function(col) {
         val <- input[[paste0("col_", col)]]
         if (is.null(val) || val == "") "" else val
@@ -247,8 +252,13 @@ server <- function(input, output, session) {
       names(new_row) <- cols
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
-      # Append to the specific sheet tab
-      sheet_append(input$selected_sheet, new_row_df, sheet = input$selected_tab)
+      # Append to sheet
+      sheet_name <- if (input$sheet_name != "") input$sheet_name else NULL
+      if (!is.null(sheet_name)) {
+        sheet_append(input$selected_sheet, new_row_df, sheet = sheet_name)
+      } else {
+        sheet_append(input$selected_sheet, new_row_df)
+      }
       
       showNotification("Row added successfully!", type = "message")
       
@@ -272,7 +282,7 @@ server <- function(input, output, session) {
   output$sheet_data <- renderTable({
     data <- sheet_data()
     if (is.null(data) || nrow(data) == 0) {
-      return(data.frame("No Data" = "Select a sheet, tab, and click Reload Data"))
+      return(data.frame("Message" = "Select a sheet and click Reload Data", stringsAsFactors = FALSE))
     }
     data
   }, na = "")
@@ -281,7 +291,7 @@ server <- function(input, output, session) {
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
     } else {
-      "Select a sheet and tab to load data"
+      "Select a sheet to load data"
     }
   })
 }
