@@ -72,8 +72,13 @@ server <- function(input, output, session) {
   req(current_sheet_id())
   
   tryCatch({
-    # Use googlesheets4's built-in read function
-    data <- read_sheet(current_sheet_id(), range = "A:Z")
+    # Use read_sheet with explicit options to avoid parsing issues
+    data <- read_sheet(
+      current_sheet_id(), 
+      range = "A:Z",
+      col_types = "c",  # Read all columns as character to avoid type detection
+      .name_repair = "unique"  # Handle duplicate column names
+    )
     
     if (is.null(data) || nrow(data) == 0) {
       data <- data.frame(NoData = "No values found in sheet", stringsAsFactors = FALSE)
