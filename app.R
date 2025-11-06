@@ -67,73 +67,45 @@ server <- function(input, output, session) {
 
   # Load data using Google Sheets API directly to bypass googlesheets4 type inference
   load_sheet_data <- function() {
-    req(current_sheet_id())
+  req(current_sheet_id())
+  
+  tryCatch({
+    # Disable automatic type conversion by reading as all text
+    data <- range_read(
+      current_sheet_id(),
+      col_types = "c",  # Force all columns to character
+      .name_repair = "unique"
+    )
     
-    tryCatch({
-      # Try multiple fallback methods
-      data <- tryCatch({
-        # Method 1: Use range_read with specific range to avoid auto-detection
-        range_read(current_sheet_id(), range = "A:Z", col_types = "c")
-      }, error = function(e1) {
-        tryCatch({
-          # Method 2: Read with smaller range
-          range_read(current_sheet_id(), range = "A1:Z1000", col_types = "c")
-        }, error = function(e2) {
-          tryCatch({
-            # Method 3: Use read_sheet without col_types specification 
-            read_sheet(current_sheet_id())
-          }, error = function(e3) {
-            tryCatch({
-              # Method 4: Use range_read with no col_types
-              range_read(current_sheet_id(), range = "A:Z")
-            }, error = function(e4) {
-              # Method 5: Try to read just the first few rows and columns
-              range_read(current_sheet_id(), range = "A1:F100", col_types = "c")
-            })
-          })
-        })
-      })
-      
-      # Handle empty data
-      if (is.null(data) || nrow(data) == 0) {
-        data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
-        showNotification("Sheet appears to be empty", type = "warning")
-      } else {
-        # Convert everything to character to ensure consistency
-        data <- data.frame(lapply(data, function(col) {
-          # Handle different column types
-          if (is.list(col)) {
-            # If it's a list column, extract the first element or convert to string
-            sapply(col, function(x) {
-              if (is.null(x)) {
-                ""
-              } else if (length(x) == 0) {
-                ""
-              } else {
-                as.character(x[1])
-              }
-            })
-          } else {
-            as.character(col)
-          }
-        }), stringsAsFactors = FALSE)
-        
-        # Clean up the data
-        data[is.na(data)] <- ""
-        names(data) <- make.names(names(data), unique = TRUE)
-        
-        # Remove completely empty rows
-        if (nrow(data) > 0) {
-          empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
-          if (any(!empty_rows)) {
-            data <- data[!empty_rows, , drop = FALSE]
-          }
-        }
-      }
-      
-      sheet_data(data)
-      last_update(Sys.time())
-      showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+    # Handle empty sheets
+    if (is.null(data) || nrow(data) == 0) {
+      data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+      showNotification("Sheet appears to be empty", type = "warning")
+    } else {
+      # Clean up data
+      data[is.na(data)] <- ""
+      data <- as.data.frame(data, stringsAsFactors = FALSE)
+    }
+    
+    sheet_data(data)
+    last_update(Sys.time())
+    showNotification(
+      paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), 
+      type = "message"
+    )
+    
+  }, error = function(e) {
+    showNotification(
+      paste("Error reading sheet:", e$message),
+      type = "error",
+      duration = 15
+    )
+    sheet_data(data.frame(
+      Error = paste("Could not load data:", e$message),
+      stringsAsFactors = FALSE
+    ))
+  })
+}
       
     }, error = function(e) {
       showNotification(
