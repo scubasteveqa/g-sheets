@@ -73,6 +73,16 @@ server <- function(input, output, session) {
 
   tryCatch({
     token <- gs4_token()
+    
+    # Get the access token using gargle's method
+    access_token <- token$credentials$access_token
+    
+    # If token is NULL or expired, refresh it
+    if (is.null(access_token)) {
+      gs4_auth(path = "secret/trackingauth.json")
+      token <- gs4_token()
+      access_token <- token$credentials$access_token
+    }
 
     # Direct API call to Google Sheets API v4
     api_url <- paste0(
@@ -83,7 +93,7 @@ server <- function(input, output, session) {
 
     response <- httr::GET(
       api_url,
-      httr::add_headers(Authorization = paste("Bearer", token$credentials$access_token))
+      httr::add_headers(Authorization = paste("Bearer", access_token))
     )
 
     if (httr::status_code(response) == 200) {
@@ -112,7 +122,8 @@ server <- function(input, output, session) {
       last_update(Sys.time())
       showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
     } else {
-      stop(paste("API error:", httr::status_code(response), httr::content(response, "text")))
+      error_msg <- httr::content(response, "text", encoding = "UTF-8")
+      stop(paste("API error:", httr::status_code(response), error_msg))
     }
 
   }, error = function(e) {
