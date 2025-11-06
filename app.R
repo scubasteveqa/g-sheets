@@ -7,7 +7,22 @@ library(tidyverse)
 library(googledrive) # needed to move files within the tracking drive
 library(googlesheets4) # googlesheets functionality
 library(shinyWidgets) # pop up modal
-library(shinyjs) # popups and other features needing js
+library(shinyjs)
+library(jsonlite)
+
+# Create secret directory if it doesn't exist
+if (!dir.exists("secret")) {
+  dir.create("secret")
+}
+
+# Get credentials from environment variable and write to file
+creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
+if (creds_json != "" && !file.exists("secret/trackingauth.json")) {
+  # Parse and re-write to ensure proper formatting
+  creds <- fromJSON(creds_json)
+  write(toJSON(creds, auto_unbox = TRUE, pretty = TRUE),
+        "secret/trackingauth.json")
+}# popups and other features needing js
 
 drive_auth(path = "secret/trackingauth.json")
 gs4_auth(path = "secret/trackingauth.json")
