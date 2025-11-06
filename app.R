@@ -17,14 +17,19 @@ if (creds_json != "" && !file.exists("secret/trackingauth.json")) {
         "secret/trackingauth.json")
 }
 
+# Authenticate with service account
+drive_auth(path = "secret/trackingauth.json")
+gs4_auth(path = "secret/trackingauth.json")
+options(gargle_oauth_cache = "secret",
+        gargle_oauth_email = TRUE)
+
 ui <- page_sidebar(
   title = "Google Sheets Editor",
   sidebar = sidebar(
     h4("Sheet Selection"),
-    textInput("sheet_id_input", "Google Sheet ID:", 
-              value = "", 
-              placeholder = "Paste the sheet ID here"),
-    p("Get the ID from the sheet URL between /d/ and /edit"),
+    uiOutput("sheet_selector"),
+    hr(),
+    actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
     hr(),
     h4("Data Controls"),
     actionButton("refresh_btn", "Load Data", class = "btn-primary"),
@@ -42,35 +47,81 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
 
+  all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
+  current_sheet_id <- reactiveVal(NULL)
 
-  # Read data without authentication (for public sheets)
+  # Load list of accessible sheets
+  load_sheet_list <- function() {
+    tryCatch({
+      sheets <- gs4_find()
+      all_sheets(sheets)
+      showNotification("Sheet list loaded!", type = "message")
+    }, error = function(e) {
+      showNotification(
+        paste("Error loading sheets:", e$message),
+        type = "error"
+      )
+    })
+  }
+
+  # Try using range_read instead of read_sheet
   read_sheet_data <- function() {
-    req(input$sheet_id_input)
+    req(current_sheet_id())
     
     tryCatch({
-      # Deauthorize for reading (like your working example)
-      gs4_deauth()
+      # Try range_read instead of read_sheet - sometimes avoids the glue error
+      data <- range_read(current_sheet_id())
       
-      # Read the sheet
-      data <- read_sheet(input$sheet_id_input)
       sheet_data(data)
       last_update(Sys.time())
       showNotification("Data loaded successfully!", type = "message")
       
     }, error = function(e) {
-      showNotification(
-        paste("Error reading sheet:", e$message),
-        type = "error"
-      )
-      sheet_data(data.frame(
-        Error = paste("Could not read sheet:", e$message),
-        Help = "Make sure the sheet is publicly viewable or shared with anyone with the link",
-        stringsAsFactors = FALSE
-      ))
+      # If range_read fails, try with explicit parameters
+      tryCatch({
+        data <- range_read(current_sheet_id(), range = "A:Z", col_names = TRUE)
+        sheet_data(data)
+        last_update(Sys.time())
+        showNotification("Data loaded successfully (fallback method)!", type = "message")
+      }, error = function(e2) {
+        showNotification(
+          paste("Error reading sheet:", e$message),
+          type = "error"
+        )
+        sheet_data(data.frame(
+          Error = paste("Could not read sheet:", e$message),
+          stringsAsFactors = FALSE
+        ))
+      })
     })
   }
+
+  # Load sheets on startup
+  observe({
+    load_sheet_list()
+  })
+
+  # Render sheet selector dropdown
+  output$sheet_selector <- renderUI({
+    req(all_sheets())
+    selectInput(
+      "selected_sheet",
+      "Select a Sheet:",
+      choices = setNames(all_sheets()$id, all_sheets()$name)
+    )
+  })
+
+  # Update current sheet ID when selection changes
+  observeEvent(input$selected_sheet, {
+    current_sheet_id(input$selected_sheet)
+  })
+
+  # Refresh sheet list button
+  observeEvent(input$refresh_sheets, {
+    load_sheet_list()
+  })
 
   # Reload button
   observeEvent(input$refresh_btn, {
@@ -82,7 +133,7 @@ server <- function(input, output, session) {
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0 || any(cols %in% c("Error", "Help"))) {
+    if (length(cols) == 0 || cols[1] == "Error") {
       return(p("Load sheet data first to see input fields."))
     }
     
@@ -94,19 +145,16 @@ server <- function(input, output, session) {
     )
   })
 
-  # Add new row to sheet (with authentication)
+  # Add new row to sheet
   observeEvent(input$add_row, {
-    req(sheet_data(), input$sheet_id_input)
+    req(sheet_data(), current_sheet_id())
     
     tryCatch({
       cols <- names(sheet_data())
-      if (any(cols %in% c("Error", "Help"))) {
+      if (cols[1] == "Error") {
         showNotification("Cannot add row: sheet not loaded properly", type = "error")
         return()
       }
-      
-      # Re-authenticate for writing
-      gs4_auth(path = "secret/trackingauth.json")
       
       # Collect input values
       new_row <- lapply(cols, function(col) {
@@ -117,11 +165,11 @@ server <- function(input, output, session) {
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
       # Try to append to sheet
-      sheet_append(input$sheet_id_input, new_row_df)
+      sheet_append(current_sheet_id(), new_row_df)
       
       showNotification("Row added successfully!", type = "message")
       
-      # Reload the data (deauth again for reading)
+      # Reload the data
       read_sheet_data()
       
       # Clear inputs
