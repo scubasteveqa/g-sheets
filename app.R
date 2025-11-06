@@ -69,89 +69,32 @@ server <- function(input, output, session) {
 
   # Read data using direct Google Sheets API v4 calls
   read_sheet_data <- function() {
-    req(current_sheet_id())
+  req(current_sheet_id())
+  
+  tryCatch({
+    # Use googlesheets4's built-in read function
+    data <- read_sheet(current_sheet_id(), range = "A:Z")
     
-    tryCatch({
-      # Get access token from googlesheets4
-      token <- gs4_token()
-      
-      # Make direct API call to Google Sheets API v4
-      api_url <- paste0(
-        "https://sheets.googleapis.com/v4/spreadsheets/",
-        current_sheet_id(),
-        "/values/A:Z?majorDimension=ROWS"
-      )
-      
-      response <- GET(
-        api_url,
-        add_headers(Authorization = paste("Bearer", token$credentials$access_token))
-      )
-      
-      if (status_code(response) == 200) {
-        content_data <- content(response, "parsed")
-        
-        if (!is.null(content_data$values) && length(content_data$values) > 0) {
-          values <- content_data$values
-          
-          # First row as headers
-          if (length(values) > 0) {
-            headers <- values[[1]]
-            
-            if (length(values) > 1) {
-              data_rows <- values[-1]
-              
-              # Find max columns
-              max_cols <- max(length(headers), max(sapply(data_rows, length, USE.NAMES = FALSE)))
-              
-              # Convert to matrix, padding shorter rows
-              data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
-              for (i in 1:length(data_rows)) {
-                row <- data_rows[[i]]
-                if (length(row) > 0) {
-                  data_matrix[i, 1:length(row)] <- row
-                }
-              }
-              
-              # Pad headers if needed
-              headers <- c(headers, paste0("Column", (length(headers)+1):max_cols))[1:max_cols]
-              
-              # Convert to data frame
-              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-              names(data) <- make.names(headers, unique = TRUE)
-              
-            } else {
-              # Only headers, no data rows
-              data <- data.frame(matrix(character(0), nrow = 0, ncol = length(headers)), 
-                                stringsAsFactors = FALSE)
-              names(data) <- make.names(headers, unique = TRUE)
-            }
-          } else {
-            data <- data.frame(NoData = "Sheet appears to be empty", stringsAsFactors = FALSE)
-          }
-        } else {
-          data <- data.frame(NoData = "No values found in sheet", stringsAsFactors = FALSE)
-        }
-        
-        sheet_data(data)
-        last_update(Sys.time())
-        showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-        
-      } else {
-        stop(paste("API request failed with status:", status_code(response)))
-      }
-      
-    }, error = function(e) {
-      showNotification(
-        paste("Error reading sheet:", e$message),
-        type = "error",
-        duration = 10
-      )
-      sheet_data(data.frame(
-        Error = paste("Could not read sheet:", e$message),
-        stringsAsFactors = FALSE
-      ))
-    })
-  }
+    if (is.null(data) || nrow(data) == 0) {
+      data <- data.frame(NoData = "No values found in sheet", stringsAsFactors = FALSE)
+    }
+    
+    sheet_data(data)
+    last_update(Sys.time())
+    showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+    
+  }, error = function(e) {
+    showNotification(
+      paste("Error reading sheet:", e$message),
+      type = "error",
+      duration = 10
+    )
+    sheet_data(data.frame(
+      Error = paste("Could not read sheet:", e$message),
+      stringsAsFactors = FALSE
+    ))
+  })
+}
 
   # Load sheets on startup
   observe({
