@@ -1,8 +1,8 @@
 library(shiny)
 library(bslib)
-library(httr)
+library(googlesheets4)
+library(googledrive)
 library(jsonlite)
-library(readr)
 
 # Create secret directory if it doesn't exist
 if (!dir.exists("secret")) {
@@ -17,16 +17,26 @@ if (creds_json != "" && !file.exists("secret/trackingauth.json")) {
         "secret/trackingauth.json")
 }
 
+# Authenticate with service account
+drive_auth(path = "secret/trackingauth.json")
+gs4_auth(path = "secret/trackingauth.json")
+options(gargle_oauth_cache = "secret",
+        gargle_oauth_email = TRUE)
+
 ui <- page_sidebar(
   title = "Google Sheets Editor",
   sidebar = sidebar(
-    h4("Sheet Access"),
-    textInput("sheet_id", "Google Sheet ID:", 
-              value = "", 
-              placeholder = "Enter the sheet ID from the URL"),
-    p("Extract the ID from: https://docs.google.com/spreadsheets/d/[SHEET_ID]/edit"),
+    h4("Sheet Selection"),
+    uiOutput("sheet_selector"),
     hr(),
+    actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
     actionButton("load_sheet", "Load Sheet Data", class = "btn-primary"),
+    hr(),
+    h4("Manual Data Entry"),
+    p("If automatic loading fails, enter data manually:"),
+    textInput("manual_headers", "Column Headers (comma-separated):", 
+              placeholder = "country,continent,year,lifeExp,pop,gdpPercap"),
+    actionButton("create_manual", "Create Manual Entry Form", class = "btn-warning"),
     hr(),
     h4("Add New Row"),
     uiOutput("add_row_ui"),
@@ -41,131 +51,128 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
 
+  all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
-  access_token <- reactiveVal(NULL)
+  current_sheet_id <- reactiveVal(NULL)
 
-  # Get OAuth token using service account
-  get_access_token <- function() {
+  # Load list of accessible sheets
+  load_sheet_list <- function() {
     tryCatch({
-      # Read service account key
-      service_key <- fromJSON("secret/trackingauth.json")
-      
-      # Create JWT for authentication
-      header <- list(alg = "RS256", typ = "JWT")
-      
-      now <- as.numeric(Sys.time())
-      payload <- list(
-        iss = service_key$client_email,
-        scope = "https://www.googleapis.com/auth/spreadsheets",
-        aud = "https://oauth2.googleapis.com/token",
-        exp = now + 3600,
-        iat = now
-      )
-      
-      # For simplicity, let's use httr to get token
-      body <- list(
-        grant_type = "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion = "placeholder" # In real implementation, would create proper JWT
-      )
-      
-      # Actually, let's use googlesheets4 minimally just for auth
-      library(googlesheets4)
-      gs4_auth(path = "secret/trackingauth.json")
-      token <- gs4_token()
-      access_token(token$credentials$access_token)
-      
+      sheets <- gs4_find()
+      all_sheets(sheets)
+      showNotification("Sheet list loaded!", type = "message")
     }, error = function(e) {
-      showNotification(paste("Auth error:", e$message), type = "error")
-      return(NULL)
+      showNotification(
+        paste("Error loading sheets:", e$message),
+        type = "error"
+      )
     })
   }
 
-  # Load data using direct API call
-  load_sheet_data <- function() {
-    req(input$sheet_id)
+  # Create manual data structure when auto-loading fails
+  create_manual_structure <- function() {
+    req(input$manual_headers)
     
-    if (is.null(access_token())) {
-      get_access_token()
+    headers <- trimws(strsplit(input$manual_headers, ",")[[1]])
+    if (length(headers) > 0) {
+      # Create empty data frame with specified headers
+      empty_data <- data.frame(matrix(character(0), nrow = 0, ncol = length(headers)), 
+                              stringsAsFactors = FALSE)
+      names(empty_data) <- make.names(headers, unique = TRUE)
+      
+      sheet_data(empty_data)
+      last_update(Sys.time())
+      showNotification(paste("Manual structure created with", length(headers), "columns"), type = "message")
     }
+  }
+
+  # Simplified data loading - just try one simple method
+  load_sheet_data <- function() {
+    req(current_sheet_id())
     
-    req(access_token())
+    # Show loading notification
+    showNotification("Attempting to load sheet data...", type = "message", duration = 3)
     
     tryCatch({
-      # Use Google Sheets API v4 directly
-      api_url <- paste0(
-        "https://sheets.googleapis.com/v4/spreadsheets/",
-        input$sheet_id,
-        "/values/A:Z"
+      # Single, simple attempt with minimal parameters
+      # Force everything to be character and limit to reasonable range
+      data <- read_sheet(
+        ss = current_sheet_id(),
+        range = "A1:Z1000",
+        col_types = "c",
+        na = c("", "NA"),
+        trim_ws = TRUE
       )
       
-      response <- GET(
-        api_url,
-        add_headers(Authorization = paste("Bearer", access_token()))
-      )
-      
-      if (status_code(response) == 200) {
-        content_data <- content(response, "parsed")
-        values <- content_data$values
-        
-        if (length(values) > 0) {
-          # First row as headers
-          headers <- values[[1]]
-          data_rows <- values[-1]
-          
-          # Convert to data frame
-          max_cols <- max(length(headers), max(sapply(data_rows, length)))
-          
-          # Pad rows to same length
-          data_matrix <- t(sapply(data_rows, function(row) {
-            c(row, rep("", max_cols - length(row)))[1:max_cols]
-          }))
-          
-          # Pad headers if needed
-          headers <- c(headers, paste0("Column", (length(headers)+1):max_cols))[1:max_cols]
-          
-          data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-          names(data) <- make.names(headers, unique = TRUE)
-          
-          # Clean up
-          data[is.na(data)] <- ""
-          
-          # Remove empty rows
-          empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
-          if (any(!empty_rows)) {
-            data <- data[!empty_rows, , drop = FALSE]
-          }
-          
-        } else {
-          data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
-        }
-        
-        sheet_data(data)
-        last_update(Sys.time())
-        showNotification(paste("Data loaded! Rows:", nrow(data)), type = "message")
-        
+      # If we got here, it worked!
+      if (is.null(data) || nrow(data) == 0) {
+        showNotification("Sheet is empty or no data found", type = "warning")
+        data <- data.frame(Message = "No data found in sheet", stringsAsFactors = FALSE)
       } else {
-        stop(paste("API returned status:", status_code(response)))
+        # Basic cleanup
+        data <- as.data.frame(data, stringsAsFactors = FALSE)
+        data[is.na(data)] <- ""
+        names(data) <- make.names(names(data), unique = TRUE)
+        
+        showNotification(paste("Success! Loaded", nrow(data), "rows"), type = "message")
       }
+      
+      sheet_data(data)
+      last_update(Sys.time())
       
     }, error = function(e) {
       showNotification(
-        paste("Error loading data:", e$message),
+        paste("Automatic loading failed:", e$message, 
+              "\nTry using manual entry below."),
         type = "error",
-        duration = 10
+        duration = 15
       )
-      sheet_data(data.frame(Error = paste("Could not load:", e$message), stringsAsFactors = FALSE))
+      
+      # Set a helpful error message
+      sheet_data(data.frame(
+        Error = "Could not load sheet automatically",
+        Solution = "Use manual data entry below",
+        Technical_Details = e$message,
+        stringsAsFactors = FALSE
+      ))
     })
   }
 
-  # Initialize auth on startup
+  # Load sheets on startup
   observe({
-    get_access_token()
+    load_sheet_list()
+  })
+
+  # Render sheet selector dropdown
+  output$sheet_selector <- renderUI({
+    req(all_sheets())
+    selectInput(
+      "selected_sheet",
+      "Select a Sheet:",
+      choices = setNames(all_sheets()$id, all_sheets()$name)
+    )
+  })
+
+  # Update current sheet ID when selection changes
+  observeEvent(input$selected_sheet, {
+    current_sheet_id(input$selected_sheet)
+  })
+
+  # Refresh sheet list button
+  observeEvent(input$refresh_sheets, {
+    load_sheet_list()
   })
 
   # Load sheet button
   observeEvent(input$load_sheet, {
+    req(current_sheet_id())
     load_sheet_data()
+  })
+
+  # Create manual structure button
+  observeEvent(input$create_manual, {
+    create_manual_structure()
   })
 
   # Render input fields for adding a new row
@@ -173,8 +180,8 @@ server <- function(input, output, session) {
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0 || cols[1] == "Error") {
-      return(p("Load sheet data first to see input fields."))
+    if (length(cols) == 0 || any(cols %in% c("Error", "Solution", "Technical_Details", "Message"))) {
+      return(p("Load sheet data or create manual structure first."))
     }
     
     tagList(
@@ -185,54 +192,47 @@ server <- function(input, output, session) {
     )
   })
 
-  # Add new row using direct API
+  # Add new row to sheet
   observeEvent(input$add_row, {
-    req(sheet_data(), input$sheet_id, access_token())
+    req(sheet_data(), current_sheet_id())
     
     tryCatch({
       cols <- names(sheet_data())
-      if (cols[1] == "Error") return()
+      if (any(cols %in% c("Error", "Solution", "Technical_Details", "Message"))) {
+        showNotification("Cannot add row: sheet not loaded properly", type = "error")
+        return()
+      }
       
-      # Collect values
-      new_values <- sapply(cols, function(col) {
+      # Collect input values
+      new_row <- lapply(cols, function(col) {
         val <- input[[paste0("col_", col)]]
         if (is.null(val) || val == "") "" else val
       })
+      names(new_row) <- cols
+      new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
-      # Append via API
-      api_url <- paste0(
-        "https://sheets.googleapis.com/v4/spreadsheets/",
-        input$sheet_id,
-        "/values/A:Z:append?valueInputOption=RAW"
-      )
+      # Try to append to sheet
+      sheet_append(current_sheet_id(), new_row_df)
       
-      body_data <- list(
-        values = list(as.list(new_values))
-      )
+      showNotification("Row added successfully!", type = "message")
       
-      response <- POST(
-        api_url,
-        add_headers(
-          Authorization = paste("Bearer", access_token()),
-          `Content-Type` = "application/json"
-        ),
-        body = toJSON(body_data, auto_unbox = TRUE)
-      )
+      # Update local data
+      current_data <- sheet_data()
+      updated_data <- rbind(current_data, new_row_df)
+      sheet_data(updated_data)
+      last_update(Sys.time())
       
-      if (status_code(response) == 200) {
-        showNotification("Row added successfully!", type = "message")
-        # Clear inputs
-        lapply(cols, function(col) {
-          updateTextInput(session, paste0("col_", col), value = "")
-        })
-        # Reload data
-        load_sheet_data()
-      } else {
-        stop(paste("Failed to add row. Status:", status_code(response)))
-      }
+      # Clear inputs
+      lapply(cols, function(col) {
+        updateTextInput(session, paste0("col_", col), value = "")
+      })
       
     }, error = function(e) {
-      showNotification(paste("Error adding row:", e$message), type = "error")
+      showNotification(
+        paste("Error adding row:", e$message),
+        type = "error",
+        duration = 10
+      )
     })
   })
 
@@ -240,7 +240,7 @@ server <- function(input, output, session) {
   output$sheet_data <- renderTable({
     data <- sheet_data()
     if (is.null(data) || nrow(data) == 0) {
-      return(data.frame("Message" = "Enter Sheet ID and click Load Sheet Data", stringsAsFactors = FALSE))
+      return(data.frame("Message" = "Select a sheet and click Load Sheet Data", stringsAsFactors = FALSE))
     }
     data
   })
@@ -249,7 +249,7 @@ server <- function(input, output, session) {
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
     } else {
-      "Enter sheet ID to load data"
+      "Select a sheet to load data"
     }
   })
 }
