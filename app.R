@@ -32,12 +32,6 @@ ui <- page_sidebar(
     actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
     actionButton("load_sheet", "Load Sheet Data", class = "btn-primary"),
     hr(),
-    h4("Manual Data Entry"),
-    p("If automatic loading fails, enter data manually:"),
-    textInput("manual_headers", "Column Headers (comma-separated):", 
-              placeholder = "country,continent,year,lifeExp,pop,gdpPercap"),
-    actionButton("create_manual", "Create Manual Entry Form", class = "btn-warning"),
-    hr(),
     h4("Add New Row"),
     uiOutput("add_row_ui"),
     br(),
@@ -70,52 +64,23 @@ server <- function(input, output, session) {
     })
   }
 
-  # Create manual data structure when auto-loading fails
-  create_manual_structure <- function() {
-    req(input$manual_headers)
-    
-    headers <- trimws(strsplit(input$manual_headers, ",")[[1]])
-    if (length(headers) > 0) {
-      # Create empty data frame with specified headers
-      empty_data <- data.frame(matrix(character(0), nrow = 0, ncol = length(headers)), 
-                              stringsAsFactors = FALSE)
-      names(empty_data) <- make.names(headers, unique = TRUE)
-      
-      sheet_data(empty_data)
-      last_update(Sys.time())
-      showNotification(paste("Manual structure created with", length(headers), "columns"), type = "message")
-    }
-  }
-
-  # Simplified data loading - just try one simple method
+  # Simplified data loading using the same approach as your working example
   load_sheet_data <- function() {
     req(current_sheet_id())
     
-    # Show loading notification
     showNotification("Attempting to load sheet data...", type = "message", duration = 3)
     
     tryCatch({
-      # Single, simple attempt with minimal parameters
-      # Force everything to be character and limit to reasonable range
-      data <- read_sheet(
-        ss = current_sheet_id(),
-        range = "A1:Z1000",
-        col_types = "c",
-        na = c("", "NA"),
-        trim_ws = TRUE
-      )
+      # Use the same simple approach as your working code
+      # Just call read_sheet with minimal parameters
+      data <- read_sheet(current_sheet_id())
       
-      # If we got here, it worked!
+      # Basic validation and cleanup
       if (is.null(data) || nrow(data) == 0) {
         showNotification("Sheet is empty or no data found", type = "warning")
         data <- data.frame(Message = "No data found in sheet", stringsAsFactors = FALSE)
       } else {
-        # Basic cleanup
-        data <- as.data.frame(data, stringsAsFactors = FALSE)
-        data[is.na(data)] <- ""
-        names(data) <- make.names(names(data), unique = TRUE)
-        
-        showNotification(paste("Success! Loaded", nrow(data), "rows"), type = "message")
+        showNotification(paste("Success! Loaded", nrow(data), "rows,", ncol(data), "columns"), type = "message")
       }
       
       sheet_data(data)
@@ -123,16 +88,14 @@ server <- function(input, output, session) {
       
     }, error = function(e) {
       showNotification(
-        paste("Automatic loading failed:", e$message, 
-              "\nTry using manual entry below."),
+        paste("Error reading sheet:", e$message),
         type = "error",
-        duration = 15
+        duration = 10
       )
       
       # Set a helpful error message
       sheet_data(data.frame(
-        Error = "Could not load sheet automatically",
-        Solution = "Use manual data entry below",
+        Error = "Could not load sheet",
         Technical_Details = e$message,
         stringsAsFactors = FALSE
       ))
@@ -170,18 +133,13 @@ server <- function(input, output, session) {
     load_sheet_data()
   })
 
-  # Create manual structure button
-  observeEvent(input$create_manual, {
-    create_manual_structure()
-  })
-
   # Render input fields for adding a new row
   output$add_row_ui <- renderUI({
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0 || any(cols %in% c("Error", "Solution", "Technical_Details", "Message"))) {
-      return(p("Load sheet data or create manual structure first."))
+    if (length(cols) == 0 || any(cols %in% c("Error", "Technical_Details", "Message"))) {
+      return(p("Load sheet data first to see input fields."))
     }
     
     tagList(
@@ -198,7 +156,7 @@ server <- function(input, output, session) {
     
     tryCatch({
       cols <- names(sheet_data())
-      if (any(cols %in% c("Error", "Solution", "Technical_Details", "Message"))) {
+      if (any(cols %in% c("Error", "Technical_Details", "Message"))) {
         showNotification("Cannot add row: sheet not loaded properly", type = "error")
         return()
       }
