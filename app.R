@@ -72,32 +72,13 @@ server <- function(input, output, session) {
   req(current_sheet_id())
 
   tryCatch({
-    response <- googlesheets4::request_make(
-      googlesheets4::request_generate(
-        endpoint = "sheets.spreadsheets.values.get",
-        params = list(
-          spreadsheetId = current_sheet_id(),
-          range = "A:Z"  # No sheet name - reads first sheet
-        )
-      )
+    data <- googlesheets4::range_read(
+      ss = current_sheet_id(),
+      range = NULL,  # Read all data
+      col_types = "c"  # All columns as character to avoid parsing issues
     )
 
-    if (!is.null(response$values) && length(response$values) > 0) {
-      values <- response$values
-      headers <- values[[1]]
-      data_rows <- values[-1]
-
-      max_cols <- length(headers)
-      data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
-
-      for (i in seq_along(data_rows)) {
-        row <- data_rows[[i]]
-        data_matrix[i, seq_along(row)] <- row
-      }
-
-      data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-      names(data) <- make.names(headers, unique = TRUE)
-    } else {
+    if (is.null(data) || nrow(data) == 0) {
       data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
     }
 
@@ -110,6 +91,7 @@ server <- function(input, output, session) {
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
+
 
   # Load sheets on startup
   observe({
