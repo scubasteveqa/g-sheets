@@ -70,56 +70,74 @@ server <- function(input, output, session) {
   # Read data using direct Google Sheets API v4 calls
   read_sheet_data <- function() {
   req(current_sheet_id())
-
+  
   tryCatch({
     # Get credentials from environment
     creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
     creds <- jsonlite::fromJSON(creds_json)
-
+    
     # Create OAuth token manually
     token <- httr::oauth_service_token(
       endpoint = httr::oauth_endpoints("google"),
       secrets = creds,
       scope = "https://www.googleapis.com/auth/spreadsheets"
     )
-
+    
     # Direct API call
     api_url <- paste0(
       "https://sheets.googleapis.com/v4/spreadsheets/",
       current_sheet_id(),
       "/values/A:Z"
     )
-
+    
     response <- httr::GET(
       api_url,
       httr::config(token = token)
     )
-
+    
     if (httr::status_code(response) == 200) {
       content_data <- httr::content(response, "parsed")
-
+      
       if (!is.null(content_data$values) && length(content_data$values) > 0) {
         values <- content_data$values
-        headers <- values[[1]]
-        data_rows <- values[-1]
-
-        max_cols <- length(headers)
-        data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
-
-        for (i in seq_along(data_rows)) {
-          row <- data_rows[[i]]
-          row_length <- min(length(row), max_cols)  # Prevent overflow
-          if (row_length > 0) {
-            data_matrix[i, 1:row_length] <- row[1:row_length]
+        
+        # Ensure we have at least a header row
+        if (length(values) < 1) {
+          data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
+        } else {
+          headers <- unlist(values[[1]])
+          max_cols <- length(headers)
+          
+          # Handle single-row sheet (header only)
+          if (length(values) == 1) {
+            data <- data.frame(matrix(ncol = max_cols, nrow = 0))
+            names(data) <- make.names(headers, unique = TRUE)
+          } else {
+            data_rows <- values[-1]
+            num_rows <- length(data_rows)
+            
+            # Pre-allocate matrix
+            data_matrix <- matrix("", nrow = num_rows, ncol = max_cols)
+            
+            # Fill matrix row by row
+            for (i in seq_len(num_rows)) {
+              row <- unlist(data_rows[[i]])
+              if (length(row) > 0) {
+                # Only assign up to the number of columns we have
+                cols_to_fill <- min(length(row), max_cols)
+                data_matrix[i, seq_len(cols_to_fill)] <- row[seq_len(cols_to_fill)]
+              }
+            }
+            
+            # Convert to data frame
+            data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+            names(data) <- make.names(headers, unique = TRUE)
           }
         }
-
-        data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-        names(data) <- make.names(headers, unique = TRUE)
       } else {
         data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
       }
-
+      
       sheet_data(data)
       last_update(Sys.time())
       showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
@@ -127,13 +145,12 @@ server <- function(input, output, session) {
       error_msg <- httr::content(response, "text", encoding = "UTF-8")
       stop(paste("API error:", httr::status_code(response), error_msg))
     }
-
+    
   }, error = function(e) {
     showNotification(paste("Error:", e$message), type = "error", duration = 10)
     sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
-
 
   # Load sheets on startup
   observe({
