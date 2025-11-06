@@ -3,6 +3,7 @@ library(bslib)
 library(googlesheets4)
 library(googledrive)
 library(jsonlite)
+library(httr)
 
 # Create secret directory if it doesn't exist
 if (!dir.exists("secret")) {
@@ -64,41 +65,88 @@ server <- function(input, output, session) {
     })
   }
 
-  # Load data from sheet (defaulting to first tab)
+  # Load data using Google Sheets API directly to bypass googlesheets4 type inference
   load_sheet_data <- function() {
     req(current_sheet_id())
     
     tryCatch({
-      # Simple approach: read all data as character to avoid type issues
-      # This will default to the first sheet/tab
-      data <- read_sheet(current_sheet_id(), col_types = "c")
+      # Try multiple fallback methods
+      data <- tryCatch({
+        # Method 1: Use range_read with specific range to avoid auto-detection
+        range_read(current_sheet_id(), range = "A:Z", col_types = "c")
+      }, error = function(e1) {
+        tryCatch({
+          # Method 2: Read with smaller range
+          range_read(current_sheet_id(), range = "A1:Z1000", col_types = "c")
+        }, error = function(e2) {
+          tryCatch({
+            # Method 3: Use read_sheet without col_types specification 
+            read_sheet(current_sheet_id())
+          }, error = function(e3) {
+            tryCatch({
+              # Method 4: Use range_read with no col_types
+              range_read(current_sheet_id(), range = "A:Z")
+            }, error = function(e4) {
+              # Method 5: Try to read just the first few rows and columns
+              range_read(current_sheet_id(), range = "A1:F100", col_types = "c")
+            })
+          })
+        })
+      })
       
       # Handle empty data
       if (is.null(data) || nrow(data) == 0) {
         data <- data.frame(Column1 = character(0), stringsAsFactors = FALSE)
+        showNotification("Sheet appears to be empty", type = "warning")
       } else {
+        # Convert everything to character to ensure consistency
+        data <- data.frame(lapply(data, function(col) {
+          # Handle different column types
+          if (is.list(col)) {
+            # If it's a list column, extract the first element or convert to string
+            sapply(col, function(x) {
+              if (is.null(x)) {
+                ""
+              } else if (length(x) == 0) {
+                ""
+              } else {
+                as.character(x[1])
+              }
+            })
+          } else {
+            as.character(col)
+          }
+        }), stringsAsFactors = FALSE)
+        
         # Clean up the data
         data[is.na(data)] <- ""
         names(data) <- make.names(names(data), unique = TRUE)
         
         # Remove completely empty rows
-        empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
-        if (any(!empty_rows)) {
-          data <- data[!empty_rows, , drop = FALSE]
+        if (nrow(data) > 0) {
+          empty_rows <- apply(data, 1, function(row) all(row == "" | is.na(row)))
+          if (any(!empty_rows)) {
+            data <- data[!empty_rows, , drop = FALSE]
+          }
         }
       }
       
       sheet_data(data)
       last_update(Sys.time())
-      showNotification(paste("Data loaded successfully! Rows:", nrow(data)), type = "message")
+      showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
       
     }, error = function(e) {
       showNotification(
         paste("Error reading sheet:", e$message),
         type = "error",
-        duration = 10
+        duration = 15
       )
-      sheet_data(data.frame(Error = paste("Could not load data:", e$message), stringsAsFactors = FALSE))
+      # Create a diagnostic data frame
+      sheet_data(data.frame(
+        Error = paste("Could not load data:", e$message),
+        Help = "Try refreshing or check if sheet has unusual formatting",
+        stringsAsFactors = FALSE
+      ))
     })
   }
 
@@ -138,7 +186,7 @@ server <- function(input, output, session) {
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0 || cols[1] == "Error") {
+    if (length(cols) == 0 || any(cols %in% c("Error", "Help"))) {
       return(p("No columns available. Please select a sheet and load data first."))
     }
     
@@ -159,7 +207,7 @@ server <- function(input, output, session) {
     tryCatch({
       # Collect input values
       cols <- names(sheet_data())
-      if (cols[1] == "Error") {
+      if (any(cols %in% c("Error", "Help"))) {
         showNotification("Cannot add row: sheet data not loaded properly", type = "error")
         return()
       }
@@ -171,7 +219,7 @@ server <- function(input, output, session) {
       names(new_row) <- cols
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
       
-      # Append to sheet (will use first tab by default)
+      # Append to sheet
       sheet_append(current_sheet_id(), new_row_df)
       
       showNotification("Row added successfully!", type = "message")
