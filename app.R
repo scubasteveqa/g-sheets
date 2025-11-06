@@ -72,34 +72,56 @@ server <- function(input, output, session) {
   req(current_sheet_id())
 
   tryCatch({
-    # Use range_read with minimal processing
-    data <- range_read(
-      ss = current_sheet_id(),
-      sheet = "Africa",
-      col_types = "c",
-      .name_repair = "unique"
+    token <- gs4_token()
+    
+    # Direct API call to Google Sheets API v4
+    api_url <- paste0(
+      "https://sheets.googleapis.com/v4/spreadsheets/",
+      current_sheet_id(),
+      "/values/Africa!A:Z"
     )
 
-    if (is.null(data) || nrow(data) == 0) {
-      data <- data.frame(NoData = "No values found in sheet", stringsAsFactors = FALSE)
+    response <- GET(
+      api_url,
+      config(token = token)
+    )
+
+    if (status_code(response) == 200) {
+      content_data <- content(response, "parsed")
+
+      if (!is.null(content_data$values) && length(content_data$values) > 0) {
+        values <- content_data$values
+        headers <- values[[1]]
+        data_rows <- values[-1]
+
+        # Convert to data frame
+        max_cols <- length(headers)
+        data_matrix <- matrix("", nrow = length(data_rows), ncol = max_cols)
+        
+        for (i in seq_along(data_rows)) {
+          row <- data_rows[[i]]
+          data_matrix[i, seq_along(row)] <- row
+        }
+
+        data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
+        names(data) <- make.names(headers, unique = TRUE)
+      } else {
+        data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
+      }
+
+      sheet_data(data)
+      last_update(Sys.time())
+      showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+    } else {
+      stop(paste("API error:", status_code(response), content(response, "text")))
     }
 
-    sheet_data(data)
-    last_update(Sys.time())
-    showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-
   }, error = function(e) {
-    showNotification(
-      paste("Error reading sheet:", e$message),
-      type = "error",
-      duration = 10
-    )
-    sheet_data(data.frame(
-      Error = paste("Could not read sheet:", e$message),
-      stringsAsFactors = FALSE
-    ))
+    showNotification(paste("Error:", e$message), type = "error", duration = 10)
+    sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
   })
 }
+
 
 
   # Load sheets on startup
