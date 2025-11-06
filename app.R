@@ -70,25 +70,24 @@ server <- function(input, output, session) {
   # Read data using direct Google Sheets API v4 calls
   read_sheet_data <- function() {
   req(current_sheet_id())
-  
+
   tryCatch({
     # Use range_read with minimal processing
     data <- range_read(
       ss = current_sheet_id(),
       sheet = "Africa",
       col_types = "c",
-      .name_repair = "unique",
-      skip_empty_rows = FALSE
+      .name_repair = "unique"
     )
-    
+
     if (is.null(data) || nrow(data) == 0) {
       data <- data.frame(NoData = "No values found in sheet", stringsAsFactors = FALSE)
     }
-    
+
     sheet_data(data)
     last_update(Sys.time())
     showNotification(paste("Data loaded successfully! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-    
+
   }, error = function(e) {
     showNotification(
       paste("Error reading sheet:", e$message),
