@@ -30,7 +30,9 @@ ui <- page_sidebar(
     uiOutput("sheet_selector"),
     hr(),
     actionButton("refresh_sheets", "Refresh Sheet List", class = "btn-secondary"),
-    actionButton("load_sheet", "Load Sheet Data", class = "btn-primary"),
+    hr(),
+    h4("Data Controls"),
+    actionButton("refresh_btn", "Reload Data", class = "btn-primary"),
     hr(),
     h4("Add New Row"),
     uiOutput("add_row_ui"),
@@ -38,7 +40,7 @@ ui <- page_sidebar(
     textOutput("last_updated")
   ),
   card(
-    card_header("Sheet Data"),
+    card_header("Current Sheet Data"),
     tableOutput("sheet_data")
   )
 )
@@ -64,39 +66,23 @@ server <- function(input, output, session) {
     })
   }
 
-  # Simplified data loading using the same approach as your working example
-  load_sheet_data <- function() {
+  # Use the exact same reading function as your working example
+  read_sheet_data <- function() {
     req(current_sheet_id())
     
-    showNotification("Attempting to load sheet data...", type = "message", duration = 3)
-    
     tryCatch({
-      # Use the same simple approach as your working code
-      # Just call read_sheet with minimal parameters
+      # Exact same approach as your working code
       data <- read_sheet(current_sheet_id())
-      
-      # Basic validation and cleanup
-      if (is.null(data) || nrow(data) == 0) {
-        showNotification("Sheet is empty or no data found", type = "warning")
-        data <- data.frame(Message = "No data found in sheet", stringsAsFactors = FALSE)
-      } else {
-        showNotification(paste("Success! Loaded", nrow(data), "rows,", ncol(data), "columns"), type = "message")
-      }
-      
       sheet_data(data)
       last_update(Sys.time())
-      
+      showNotification("Data loaded successfully!", type = "message")
     }, error = function(e) {
       showNotification(
         paste("Error reading sheet:", e$message),
-        type = "error",
-        duration = 10
+        type = "error"
       )
-      
-      # Set a helpful error message
       sheet_data(data.frame(
-        Error = "Could not load sheet",
-        Technical_Details = e$message,
+        Error = paste("Could not read sheet:", e$message),
         stringsAsFactors = FALSE
       ))
     })
@@ -120,6 +106,10 @@ server <- function(input, output, session) {
   # Update current sheet ID when selection changes
   observeEvent(input$selected_sheet, {
     current_sheet_id(input$selected_sheet)
+    # Auto-load data when sheet changes
+    if (!is.null(input$selected_sheet)) {
+      read_sheet_data()
+    }
   })
 
   # Refresh sheet list button
@@ -127,10 +117,9 @@ server <- function(input, output, session) {
     load_sheet_list()
   })
 
-  # Load sheet button
-  observeEvent(input$load_sheet, {
-    req(current_sheet_id())
-    load_sheet_data()
+  # Reload button - exactly like your working example
+  observeEvent(input$refresh_btn, {
+    read_sheet_data()
   })
 
   # Render input fields for adding a new row
@@ -138,7 +127,7 @@ server <- function(input, output, session) {
     req(sheet_data())
     cols <- names(sheet_data())
     
-    if (length(cols) == 0 || any(cols %in% c("Error", "Technical_Details", "Message"))) {
+    if (length(cols) == 0 || cols[1] == "Error") {
       return(p("Load sheet data first to see input fields."))
     }
     
@@ -156,7 +145,7 @@ server <- function(input, output, session) {
     
     tryCatch({
       cols <- names(sheet_data())
-      if (any(cols %in% c("Error", "Technical_Details", "Message"))) {
+      if (cols[1] == "Error") {
         showNotification("Cannot add row: sheet not loaded properly", type = "error")
         return()
       }
@@ -174,11 +163,8 @@ server <- function(input, output, session) {
       
       showNotification("Row added successfully!", type = "message")
       
-      # Update local data
-      current_data <- sheet_data()
-      updated_data <- rbind(current_data, new_row_df)
-      sheet_data(updated_data)
-      last_update(Sys.time())
+      # Reload the data
+      read_sheet_data()
       
       # Clear inputs
       lapply(cols, function(col) {
@@ -194,20 +180,16 @@ server <- function(input, output, session) {
     })
   })
 
-  # Display sheet data
+  # Display sheet data - exactly like your working example
   output$sheet_data <- renderTable({
-    data <- sheet_data()
-    if (is.null(data) || nrow(data) == 0) {
-      return(data.frame("Message" = "Select a sheet and click Load Sheet Data", stringsAsFactors = FALSE))
-    }
-    data
+    sheet_data()
   })
 
   output$last_updated <- renderText({
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
     } else {
-      "Select a sheet to load data"
+      "Not loaded yet"
     }
   })
 }
