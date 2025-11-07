@@ -5,25 +5,6 @@ library(googledrive)
 library(jsonlite)
 library(httr)
 
-# Create secret directory if it doesn't exist
-#if (!dir.exists("secret")) {
-#  dir.create("secret")
-#}
-
-# Get credentials from environment variable and write to file
-#creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
-#if (creds_json != "" && !file.exists("secret/trackingauth.json")) {
-#  creds <- fromJSON(creds_json)
-#  write(toJSON(creds, auto_unbox = TRUE, pretty = TRUE),
-#        "secret/trackingauth.json")
-#}
-
-# Authenticate with service account
-#drive_auth(path = "secret/trackingauth.json")
-#gs4_auth(path = "secret/trackingauth.json")
-#options(gargle_oauth_cache = "secret",
-#        gargle_oauth_email = TRUE)
-
 # Authenticate with service account credentials from environment
 creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
 if (creds_json != "") {
