@@ -27,11 +27,12 @@ library(httr)
 # Authenticate with service account credentials from environment
 creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
 if (creds_json != "") {
-  drive_auth(credentials = gargle::credentials_service_account(
-    scopes = "https://www.googleapis.com/auth/drive",
-    path = NULL,
-    info = fromJSON(creds_json)
-  ))
+  # Write to temp file
+  temp_key <- tempfile(fileext = ".json")
+  writeLines(creds_json, temp_key)
+  
+  # Authenticate with path
+  drive_auth(path = temp_key)
   gs4_auth(token = drive_token())
 }
 
