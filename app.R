@@ -144,21 +144,27 @@ server <- function(input, output, session) {
     # Create the sheet - separate error handling
     new_sheet <- NULL
     tryCatch({
-      initial_data <- data.frame(
-        Column1 = character(0),
-        Column2 = character(0),
-        stringsAsFactors = FALSE
-      )
-
       cat("Attempting to create sheet:", input$new_sheet_name, "\n")
 
-      new_sheet <- gs4_create(
-        name = input$new_sheet_name,
-        sheets = list("Sheet1" = initial_data)
-      )
+      # Create with just the name first (simpler, like customer.R)
+      new_sheet <- gs4_create(name = input$new_sheet_name)
 
       cat("Sheet created! ID:", new_sheet$spreadsheet_id, "\n")
-      
+
+      # Now add initial column headers
+      tryCatch({
+        initial_data <- data.frame(
+          Column1 = character(0),
+          Column2 = character(0),
+          stringsAsFactors = FALSE
+        )
+        sheet_write(initial_data, ss = new_sheet$spreadsheet_id, sheet = 1)
+        cat("Initial headers written\n")
+      }, error = function(e) {
+        cat("Warning: Could not write initial headers:", e$message, "\n")
+        # Not critical - sheet was created
+      })
+
       # Show success immediately
       showNotification(
         paste("Sheet created successfully:", input$new_sheet_name),
