@@ -147,12 +147,20 @@ server <- function(input, output, session) {
       sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
     })
   }
-  
+
 # Create new spreadsheet
 observeEvent(input$create_sheet, {
   req(input$new_sheet_name)
-  
+
   tryCatch({
+  # Test authentication before creating
+    test_auth <- gs4_has_token()
+    print(paste("Has token:", test_auth))
+
+    # Try listing sheets first (simpler operation)
+    test_list <- gs4_find(n_max = 1)
+    print("Authentication working - can list sheets")
+    
     new_sheet <- gs4_create(
       name = input$new_sheet_name,
       sheets = list(
@@ -166,19 +174,19 @@ observeEvent(input$create_sheet, {
         )
       )
     )
-    
+
     showNotification(
       paste("Sheet created successfully:", input$new_sheet_name),
       type = "message"
     )
-    
+
     # Refresh sheet list and select new sheet
     load_sheet_list()
     current_sheet_id(new_sheet$spreadsheet_id)
-    
+
     # Clear input
     updateTextInput(session, "new_sheet_name", value = "")
-    
+
   }, error = function(e) {
     showNotification(
       paste("Error creating sheet:", e$message),
@@ -187,7 +195,7 @@ observeEvent(input$create_sheet, {
     )
   })
 })
-  
+
   # Poll for data updates with a delay
   poll_data <- function(delay_ms = 2000, max_attempts = 5) {
     attempt <- 0
