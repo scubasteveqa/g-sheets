@@ -110,13 +110,23 @@ server <- function(input, output, session) {
   observeEvent(input$create_sheet, {
     req(input$new_sheet_name)
 
+    # Test drive access
     tryCatch({
-      # First, test if we can use drive operations
       cat("Testing drive access...\n")
       test_files <- drive_find(n_max = 1)
       cat("Drive access OK, found", nrow(test_files), "files\n")
+    }, error = function(e) {
+      cat("ERROR testing drive access:", e$message, "\n")
+      showNotification(
+        paste("Error accessing Drive:", e$message),
+        type = "error",
+        duration = 10
+      )
+      return()
+    })
 
-      # Check if sheet with this name already exists
+    # Check for duplicates
+    tryCatch({
       all_sheets_check <- gs4_find()
       if (input$new_sheet_name %in% all_sheets_check$name) {
         showNotification(
@@ -126,8 +136,14 @@ server <- function(input, output, session) {
         )
         return()
       }
+    }, error = function(e) {
+      cat("ERROR checking for duplicates:", e$message, "\n")
+      # Continue anyway - not critical
+    })
 
-      # Create new sheet with template data (like customer.R does)
+    # Create the sheet - separate error handling
+    new_sheet <- NULL
+    tryCatch({
       initial_data <- data.frame(
         Column1 = character(0),
         Column2 = character(0),
@@ -142,21 +158,34 @@ server <- function(input, output, session) {
       )
 
       cat("Sheet created! ID:", new_sheet$spreadsheet_id, "\n")
-
-      # Move to shared folder (like customer.R does)
-      # NOTE: This will only work AFTER you fix the 403 error by adding IAM Editor role
-      # Uncomment the line below once you can successfully create sheets:
-      # drive_mv(new_sheet, path = "Test GDrive/")
-
-      # Sheet creation succeeded
+      
+      # Show success immediately
       showNotification(
         paste("Sheet created successfully:", input$new_sheet_name),
         type = "message",
         duration = 3
       )
 
-      # Don't try to load the new sheet immediately - just refresh the list
-      # The auto-load when changing sheets might fail if sheet isn't ready
+    }, error = function(e) {
+      cat("ERROR in gs4_create():\n")
+      cat("Message:", e$message, "\n")
+      cat("Call:", deparse(e$call), "\n")
+
+      showNotification(
+        paste("Error creating sheet:", e$message),
+        type = "error",
+        duration = 10
+      )
+      return()
+    })
+
+    # Only proceed if sheet was created
+    if (is.null(new_sheet)) {
+      return()
+    }
+
+    # Post-creation operations - separate error handling
+    tryCatch({
       updateTextInput(session, "new_sheet_name", value = "")
 
       showNotification(
@@ -172,16 +201,9 @@ server <- function(input, output, session) {
       }, once = TRUE)
 
     }, error = function(e) {
-      # Log detailed error information
-      cat("ERROR creating sheet:\n")
+      cat("ERROR in post-creation operations:\n")
       cat("Message:", e$message, "\n")
-      cat("Call:", deparse(e$call), "\n")
-
-      showNotification(
-        paste("Error creating sheet:", e$message),
-        type = "error",
-        duration = 10
-      )
+      # Don't show error to user - sheet was created successfully
     })
   })
 
