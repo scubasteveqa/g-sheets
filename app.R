@@ -79,11 +79,21 @@ server <- function(input, output, session) {
 
     tryCatch({
       # Use the googlesheets4 package directly (it uses the global auth)
-      data <- read_sheet(current_sheet_id())
-      
+      # col_types = "c" forces all columns to character to avoid list column issues
+      data <- read_sheet(current_sheet_id(), col_types = "c")
+
       # Handle empty sheets
-      if (nrow(data) == 0) {
+      if (is.null(data) || nrow(data) == 0) {
         data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
+      } else {
+        # Convert any remaining list columns to character
+        data <- as.data.frame(lapply(data, function(col) {
+          if (is.list(col)) {
+            sapply(col, function(x) paste(unlist(x), collapse = ", "))
+          } else {
+            as.character(col)
+          }
+        }), stringsAsFactors = FALSE)
       }
 
       sheet_data(data)
@@ -124,16 +134,22 @@ server <- function(input, output, session) {
         sheets = list("Sheet1" = initial_data)
       )
 
+      # Sheet creation succeeded
       showNotification(
         paste("Sheet created successfully:", input$new_sheet_name),
-        type = "message"
+        type = "message",
+        duration = 3
       )
 
-      # Set the new sheet as current
-      current_sheet_id(new_sheet$spreadsheet_id)
-
-      # Clear input
+      # Don't try to load the new sheet immediately - just refresh the list
+      # The auto-load when changing sheets might fail if sheet isn't ready
       updateTextInput(session, "new_sheet_name", value = "")
+      
+      showNotification(
+        "Refreshing sheet list... Select the new sheet from the dropdown.",
+        type = "message",
+        duration = 5
+      )
 
       # Refresh list after a delay
       invalidateLater(2000, session)
