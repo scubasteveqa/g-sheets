@@ -115,7 +115,7 @@ server <- function(input, output, session) {
       cat("Testing drive access...\n")
       test_files <- drive_find(n_max = 1)
       cat("Drive access OK, found", nrow(test_files), "files\n")
-      
+
       # Check if sheet with this name already exists
       all_sheets_check <- gs4_find()
       if (input$new_sheet_name %in% all_sheets_check$name) {
@@ -135,13 +135,18 @@ server <- function(input, output, session) {
       )
 
       cat("Attempting to create sheet:", input$new_sheet_name, "\n")
-      
+
       new_sheet <- gs4_create(
         name = input$new_sheet_name,
         sheets = list("Sheet1" = initial_data)
       )
 
       cat("Sheet created! ID:", new_sheet$spreadsheet_id, "\n")
+
+      # Move to shared folder (like customer.R does)
+      # NOTE: This will only work AFTER you fix the 403 error by adding IAM Editor role
+      # Uncomment the line below once you can successfully create sheets:
+      # drive_mv(new_sheet, path = "Test GDrive/")
 
       # Sheet creation succeeded
       showNotification(
@@ -171,28 +176,11 @@ server <- function(input, output, session) {
       cat("ERROR creating sheet:\n")
       cat("Message:", e$message, "\n")
       cat("Call:", deparse(e$call), "\n")
-      
-      error_display <- paste("Error creating sheet:", e$message)
-      
-      # Check if it's specifically about Drive permissions
-      if (grepl("403|PERMISSION_DENIED", e$message)) {
-        error_display <- paste0(
-          "Permission Denied (403)\n\n",
-          "The service account can read/write existing sheets but cannot create new ones.\n\n",
-          "This usually means:\n",
-          "- Service account has 'Viewer' or 'Editor' access to specific shared sheets\n",
-          "- But lacks permission to create files in Drive\n\n",
-          "Solutions:\n",
-          "1. Grant the service account 'Editor' role at PROJECT level in IAM\n",
-          "2. Or create sheets manually and share them with the service account\n\n",
-          "Original error: ", e$message
-        )
-      }
-      
+
       showNotification(
-        error_display,
+        paste("Error creating sheet:", e$message),
         type = "error",
-        duration = NULL
+        duration = 10
       )
     })
   })
