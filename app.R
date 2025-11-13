@@ -153,14 +153,6 @@ observeEvent(input$create_sheet, {
   req(input$new_sheet_name)
 
   tryCatch({
-  # Test authentication before creating
-    test_auth <- gs4_has_token()
-    print(paste("Has token:", test_auth))
-
-    # Try listing sheets first (simpler operation)
-    test_list <- gs4_find(n_max = 1)
-    print("Authentication working - can list sheets")
-    
     new_sheet <- gs4_create(
       name = input$new_sheet_name,
       sheets = list(
@@ -180,12 +172,17 @@ observeEvent(input$create_sheet, {
       type = "message"
     )
 
-    # Refresh sheet list and select new sheet
-    load_sheet_list()
+    # Set the new sheet ID FIRST
     current_sheet_id(new_sheet$spreadsheet_id)
 
     # Clear input
     updateTextInput(session, "new_sheet_name", value = "")
+
+    # Refresh list AFTER a delay
+    invalidateLater(2000, session)
+    observe({
+      load_sheet_list()
+    }, once = TRUE)
 
   }, error = function(e) {
     showNotification(
