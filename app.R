@@ -8,21 +8,19 @@ library(httr)
 # Authenticate with service account credentials from environment
 creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
 if (creds_json != "") {
-  # Write to temp file
   temp_key <- tempfile(fileext = ".json")
   writeLines(creds_json, temp_key)
-
-  # Authenticate with path
   drive_auth(path = temp_key)
   gs4_auth(token = drive_token())
 }
 
-
 ui <- page_sidebar(
   title = "Google Sheets Editor",
   sidebar = sidebar(
-      h4("Create New Sheet"),
+    h4("Create New Sheet"),
     textInput("new_sheet_name", "Sheet Name", placeholder = "Enter new sheet name"),
+    textInput("folder_id", "1LYng2Z02LpD04E5qYIzeSaUEBeVs7ENU", 
+              placeholder = "Paste shared folder ID here"),
     actionButton("create_sheet", "Create Sheet", class = "btn-success"),
     hr(),
     h4("Sheet Selection"),
@@ -45,12 +43,10 @@ ui <- page_sidebar(
 )
 
 server <- function(input, output, session) {
-
   all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
   current_sheet_id <- reactiveVal(NULL)
-  poll_trigger <- reactiveVal(0)
 
   # Load list of accessible sheets
   load_sheet_list <- function() {
@@ -66,186 +62,94 @@ server <- function(input, output, session) {
     })
   }
 
-  # Read data using direct Google Sheets API v4 calls
+  # Read data using googlesheets4
   read_sheet_data <- function() {
     req(current_sheet_id())
-
     tryCatch({
-      # Get credentials from environment
-      creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
-      creds <- jsonlite::fromJSON(creds_json)
-
-      # Create OAuth token manually
-      token <- httr::oauth_service_token(
-        endpoint = httr::oauth_endpoints("google"),
-        secrets = creds,
-        scope = c(
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.file"
-        )
-      )
-
-      # Direct API call
-      api_url <- paste0(
-        "https://sheets.googleapis.com/v4/spreadsheets/",
-        current_sheet_id(),
-        "/values/A:Z"
-      )
-
-      response <- httr::GET(
-        api_url,
-        httr::config(token = token)
-      )
-
-      if (httr::status_code(response) == 200) {
-        content_data <- httr::content(response, "parsed")
-
-        if (!is.null(content_data$values) && length(content_data$values) > 0) {
-          values <- content_data$values
-
-          if (length(values) < 1) {
-            data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
-          } else {
-            headers <- unlist(values[[1]])
-            max_cols <- length(headers)
-
-            if (length(values) == 1) {
-              data <- data.frame(matrix(ncol = max_cols, nrow = 0))
-              names(data) <- make.names(headers, unique = TRUE)
-            } else {
-              data_rows <- values[-1]
-              num_rows <- length(data_rows)
-
-              data_matrix <- matrix("", nrow = num_rows, ncol = max_cols)
-
-              for (i in seq_len(num_rows)) {
-                row <- unlist(data_rows[[i]])
-                if (length(row) > 0) {
-                  cols_to_fill <- min(length(row), max_cols)
-                  data_matrix[i, seq_len(cols_to_fill)] <- row[seq_len(cols_to_fill)]
-                }
-              }
-
-              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-              names(data) <- make.names(headers, unique = TRUE)
-            }
-          }
-        } else {
-          data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
-        }
-
-        sheet_data(data)
-        last_update(Sys.time())
-        showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-      } else {
-        error_msg <- httr::content(response, "text", encoding = "UTF-8")
-        stop(paste("API error:", httr::status_code(response), error_msg))
+      data <- read_sheet(current_sheet_id())
+      if (nrow(data) == 0) {
+        data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
       }
-
+      sheet_data(data)
+      last_update(Sys.time())
+      showNotification(paste("Data loaded! Rows:", nrow(data)), type = "message")
     }, error = function(e) {
-      showNotification(paste("Error:", e$message), type = "error", duration = 10)
+      showNotification(paste("Error:", e$message), type = "error")
       sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
     })
   }
 
-# Create new spreadsheet
-observeEvent(input$create_sheet, {
-  req(input$new_sheet_name)
+  # Create new spreadsheet with multiple approaches
+  observeEvent(input$create_sheet, {
+    req(input$new_sheet_name)
 
-  tryCatch({
-    # Use googledrive to create a blank spreadsheet file
-    # This uses the already-authenticated drive token
-    new_file <- drive_create(
-      name = input$new_sheet_name,
-      type = "spreadsheet"
-    )
-    
-    # Get the spreadsheet ID
-    new_sheet_id <- as_id(new_file)
-    
-    # Add initial headers using googlesheets4
-    initial_data <- data.frame(
-      Column1 = character(0),
-      Column2 = character(0),
-      stringsAsFactors = FALSE
-    )
-    
-    # Write headers to the new sheet
-    sheet_write(
-      initial_data,
-      ss = new_sheet_id,
-      sheet = "Sheet1"
-    )
-
-    showNotification(
-      paste("Sheet created successfully:", input$new_sheet_name),
-      type = "message"
-    )
-
-    # Set the new sheet ID FIRST
-    current_sheet_id(new_sheet_id)
-
-    # Clear input
-    updateTextInput(session, "new_sheet_name", value = "")
-
-    # Refresh list AFTER a delay
-    invalidateLater(2000, session)
-    observe({
-      load_sheet_list()
-    }, once = TRUE)
-
-  }, error = function(e) {
-    error_msg <- e$message
-
-    # Provide helpful guidance for 403 errors
-    if (grepl("403|PERMISSION_DENIED", error_msg)) {
-      error_msg <- paste0(
-        "Permission Denied (403): Cannot create sheet.\n\n",
-        "The service account may not have permission to create files.\n\n",
-        "Check that:\n",
-        "1. Google Drive API is enabled in Google Cloud Console\n",
-        "2. Service account has 'Editor' or 'Owner' IAM role\n",
-        "3. If using Google Workspace, ensure domain-wide delegation is configured\n\n",
-        "Original error: ", e$message
-      )
-    }
-
-    showNotification(
-      error_msg,
-      type = "error",
-      duration = NULL  # Don't auto-dismiss for debugging
-    )
-  })
-})
-
-  # Poll for data updates with a delay
-  poll_data <- function(delay_ms = 2000, max_attempts = 5) {
-    attempt <- 0
-
-    poll_once <- function() {
-      attempt <<- attempt + 1
-
-      invalidateLater(delay_ms, session)
-
-      if (attempt <= max_attempts) {
-        read_sheet_data()
+    tryCatch({
+      # Method 1: Try creating in specified folder
+      if (!is.null(input$folder_id) && input$folder_id != "") {
+        new_file <- drive_create(
+          name = input$new_sheet_name,
+          type = "spreadsheet",
+          path = as_id(input$folder_id)
+        )
+      } else {
+        # Method 2: Try creating with gs4_create (sometimes has different permissions)
+        new_sheet_id <- gs4_create(
+          name = input$new_sheet_name,
+          sheets = "Sheet1"
+        )
+        new_file <- list(id = new_sheet_id)
       }
-    }
+      
+      new_sheet_id <- as_id(new_file$id)
+      
+      # Add initial headers
+      initial_data <- data.frame(
+        Column1 = character(0),
+        Column2 = character(0),
+        stringsAsFactors = FALSE
+      )
+      
+      sheet_write(
+        initial_data,
+        ss = new_sheet_id,
+        sheet = "Sheet1"
+      )
 
-    # Start first poll immediately
-    invalidateLater(0, session)
-    observe({
-      poll_trigger()
-      poll_once()
+      showNotification(
+        paste("Sheet created successfully:", input$new_sheet_name),
+        type = "message"
+      )
+
+      current_sheet_id(new_sheet_id)
+      updateTextInput(session, "new_sheet_name", value = "")
+      
+      # Refresh list after delay
+      invalidateLater(2000, session)
+      observe({
+        load_sheet_list()
+      }, once = TRUE)
+
+    }, error = function(e) {
+      error_msg <- paste0(
+        "Failed to create sheet: ", e$message, "\n\n",
+        "Try these solutions:\n",
+        "1. Create a folder in Google Drive\n",
+        "2. Share it with your service account email\n", 
+        "3. Paste the folder ID in the 'Folder ID' field above\n",
+        "4. Or try using gs4_create() method by leaving folder ID empty\n\n",
+        "Service account needs 'Editor' permission on a shared folder or domain-wide delegation."
+      )
+      
+      showNotification(error_msg, type = "error", duration = NULL)
     })
-  }
+  })
 
   # Load sheets on startup
   observeEvent(TRUE, {
     load_sheet_list()
   }, once = TRUE)
 
-  # Auto-select first sheet after list loads
+  # Auto-select first sheet
   observeEvent(all_sheets(), {
     req(all_sheets())
     if (nrow(all_sheets()) > 0 && is.null(current_sheet_id())) {
@@ -253,7 +157,7 @@ observeEvent(input$create_sheet, {
     }
   })
 
-  # Render sheet selector dropdown
+  # Render sheet selector
   output$sheet_selector <- renderUI({
     req(all_sheets())
     selectInput(
@@ -263,7 +167,7 @@ observeEvent(input$create_sheet, {
     )
   })
 
-  # Update current sheet ID when selection changes
+  # Update current sheet ID
   observeEvent(input$selected_sheet, {
     current_sheet_id(input$selected_sheet)
   })
@@ -274,17 +178,16 @@ observeEvent(input$create_sheet, {
     read_sheet_data()
   })
 
-  # Refresh sheet list button
+  # Refresh buttons
   observeEvent(input$refresh_sheets, {
     load_sheet_list()
   })
 
-  # Reload button
   observeEvent(input$refresh_btn, {
     read_sheet_data()
   })
 
-  # Render input fields for adding a new row
+  # Add row UI
   output$add_row_ui <- renderUI({
     req(sheet_data())
     cols <- names(sheet_data())
@@ -301,51 +204,44 @@ observeEvent(input$create_sheet, {
     )
   })
 
-  # Add new row to sheet with polling
+  # Add new row
   observeEvent(input$add_row, {
-  req(sheet_data(), current_sheet_id())
+    req(sheet_data(), current_sheet_id())
 
-  tryCatch({
-    cols <- names(sheet_data())
-    if (any(cols %in% c("Error", "NoData"))) {
-      showNotification("Cannot add row: sheet not loaded properly", type = "error")
-      return()
-    }
+    tryCatch({
+      cols <- names(sheet_data())
+      if (any(cols %in% c("Error", "NoData"))) {
+        showNotification("Cannot add row: sheet not loaded properly", type = "error")
+        return()
+      }
 
-    # Collect input values
-    new_row <- lapply(cols, function(col) {
-      val <- input[[paste0("col_", col)]]
-      if (is.null(val) || val == "") "" else val
+      new_row <- lapply(cols, function(col) {
+        val <- input[[paste0("col_", col)]]
+        if (is.null(val) || val == "") "" else val
+      })
+      names(new_row) <- cols
+      new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
+
+      sheet_append(current_sheet_id(), new_row_df)
+      showNotification("Row added! Refreshing data...", type = "message")
+
+      # Clear inputs
+      lapply(cols, function(col) {
+        updateTextInput(session, paste0("col_", col), value = "")
+      })
+
+      # Refresh data after delay
+      invalidateLater(2000, session)
+      observe({
+        read_sheet_data()
+      }, once = TRUE)
+
+    }, error = function(e) {
+      showNotification(paste("Error adding row:", e$message), type = "error")
     })
-    names(new_row) <- cols
-    new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
-
-    # Append to sheet
-    sheet_append(current_sheet_id(), new_row_df)
-
-    showNotification("Row added! Refreshing data...", type = "message")
-
-    # Clear inputs
-    lapply(cols, function(col) {
-      updateTextInput(session, paste0("col_", col), value = "")
-    })
-
-    # Poll with delays to allow Google Sheets to update
-    for (i in 1:5) {
-      Sys.sleep(2)
-      read_sheet_data()
-    }
-
-  }, error = function(e) {
-    showNotification(
-      paste("Error adding row:", e$message),
-      type = "error",
-      duration = 10
-    )
   })
-})
 
-  # Display sheet data
+  # Display outputs
   output$sheet_data <- renderTable({
     sheet_data()
   })
