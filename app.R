@@ -12,14 +12,8 @@ if (creds_json != "") {
   temp_key <- tempfile(fileext = ".json")
   writeLines(creds_json, temp_key)
 
-  # Authenticate with path - include all necessary scopes
-  drive_auth(
-    path = temp_key,
-    scopes = c(
-      "https://www.googleapis.com/auth/spreadsheets",
-      "https://www.googleapis.com/auth/drive.file"
-    )
-  )
+  # Authenticate with path
+  drive_auth(path = temp_key)
   gs4_auth(token = drive_token())
 }
 
@@ -159,36 +153,28 @@ observeEvent(input$create_sheet, {
   req(input$new_sheet_name)
 
   tryCatch({
-    # Get credentials and create token with explicit Drive scopes
-    creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
-    creds <- jsonlite::fromJSON(creds_json)
-    
-    # Create OAuth token with both required scopes
-    token <- httr::oauth_service_token(
-      endpoint = httr::oauth_endpoints("google"),
-      secrets = creds,
-      scope = c(
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.file"
-      )
+    # Use googledrive to create a blank spreadsheet file
+    # This uses the already-authenticated drive token
+    new_file <- drive_create(
+      name = input$new_sheet_name,
+      type = "spreadsheet"
     )
     
-    # Temporarily set this token for gs4
-    gs4_auth(token = token)
+    # Get the spreadsheet ID
+    new_sheet_id <- as_id(new_file)
     
-    # Now create the sheet
-    new_sheet <- gs4_create(
-      name = input$new_sheet_name,
-      sheets = list(
-        list(
-          name = "Sheet1",
-          data = data.frame(
-            Column1 = character(0),
-            Column2 = character(0),
-            stringsAsFactors = FALSE
-          )
-        )
-      )
+    # Add initial headers using googlesheets4
+    initial_data <- data.frame(
+      Column1 = character(0),
+      Column2 = character(0),
+      stringsAsFactors = FALSE
+    )
+    
+    # Write headers to the new sheet
+    sheet_write(
+      initial_data,
+      ss = new_sheet_id,
+      sheet = "Sheet1"
     )
 
     showNotification(
@@ -197,7 +183,7 @@ observeEvent(input$create_sheet, {
     )
 
     # Set the new sheet ID FIRST
-    current_sheet_id(new_sheet$spreadsheet_id)
+    current_sheet_id(new_sheet_id)
 
     # Clear input
     updateTextInput(session, "new_sheet_name", value = "")
@@ -217,9 +203,9 @@ observeEvent(input$create_sheet, {
         "Permission Denied (403): Cannot create sheet.\n\n",
         "The service account may not have permission to create files.\n\n",
         "Check that:\n",
-        "1. Google Drive API is enabled (you confirmed this is done)\n",
-        "2. Service account has 'Editor' or 'Owner' role\n",
-        "3. If using domain-wide delegation, ensure scopes are authorized\n\n",
+        "1. Google Drive API is enabled in Google Cloud Console\n",
+        "2. Service account has 'Editor' or 'Owner' IAM role\n",
+        "3. If using Google Workspace, ensure domain-wide delegation is configured\n\n",
         "Original error: ", e$message
       )
     }
