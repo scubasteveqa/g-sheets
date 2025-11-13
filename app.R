@@ -62,14 +62,43 @@ server <- function(input, output, session) {
     })
   }
 
+  # Helper function to clean data for display
+  clean_data_for_display <- function(data) {
+    if (is.null(data) || nrow(data) == 0) {
+      return(data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE))
+    }
+    
+    # Convert any list columns to character
+    for (i in seq_along(data)) {
+      if (is.list(data[[i]])) {
+        data[[i]] <- sapply(data[[i]], function(x) {
+          if (is.null(x) || length(x) == 0) {
+            return("")
+          } else if (length(x) == 1) {
+            return(as.character(x))
+          } else {
+            return(paste(as.character(x), collapse = ", "))
+          }
+        })
+      }
+      # Ensure all columns are character for consistent display
+      data[[i]] <- as.character(data[[i]])
+    }
+    
+    return(data)
+  }
+
   # Read data using googlesheets4
   read_sheet_data <- function() {
     req(current_sheet_id())
     tryCatch({
-      data <- read_sheet(current_sheet_id())
-      if (nrow(data) == 0) {
-        data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
-      }
+      # Use col_types = "c" to force all columns to be character
+      # This prevents list column issues
+      data <- read_sheet(current_sheet_id(), col_types = "c")
+      
+      # Clean the data for display
+      data <- clean_data_for_display(data)
+      
       sheet_data(data)
       last_update(Sys.time())
       showNotification(paste("Data loaded! Rows:", nrow(data)), type = "message")
@@ -91,16 +120,14 @@ server <- function(input, output, session) {
           type = "spreadsheet",
           path = as_id(input$folder_id)
         )
+        new_sheet_id <- as_id(new_file$id)
       } else {
         # Method 2: Try creating with gs4_create (sometimes has different permissions)
         new_sheet_id <- gs4_create(
           name = input$new_sheet_name,
           sheets = "Sheet1"
         )
-        new_file <- list(id = new_sheet_id)
       }
-      
-      new_sheet_id <- as_id(new_file$id)
       
       # Add initial headers
       initial_data <- data.frame(
@@ -241,9 +268,19 @@ server <- function(input, output, session) {
     })
   })
 
-  # Display outputs
+  # Display outputs - with safe error handling
   output$sheet_data <- renderTable({
-    sheet_data()
+    data <- sheet_data()
+    if (is.null(data)) {
+      return(data.frame(Status = "No data loaded", stringsAsFactors = FALSE))
+    }
+    
+    # Extra safety check
+    tryCatch({
+      return(data)
+    }, error = function(e) {
+      return(data.frame(Error = paste("Display error:", e$message), stringsAsFactors = FALSE))
+    })
   })
 
   output$last_updated <- renderText({
