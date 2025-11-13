@@ -111,6 +111,11 @@ server <- function(input, output, session) {
     req(input$new_sheet_name)
 
     tryCatch({
+      # First, test if we can use drive operations
+      cat("Testing drive access...\n")
+      test_files <- drive_find(n_max = 1)
+      cat("Drive access OK, found", nrow(test_files), "files\n")
+      
       # Check if sheet with this name already exists
       all_sheets_check <- gs4_find()
       if (input$new_sheet_name %in% all_sheets_check$name) {
@@ -129,10 +134,14 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
 
+      cat("Attempting to create sheet:", input$new_sheet_name, "\n")
+      
       new_sheet <- gs4_create(
         name = input$new_sheet_name,
         sheets = list("Sheet1" = initial_data)
       )
+
+      cat("Sheet created! ID:", new_sheet$spreadsheet_id, "\n")
 
       # Sheet creation succeeded
       showNotification(
@@ -144,7 +153,7 @@ server <- function(input, output, session) {
       # Don't try to load the new sheet immediately - just refresh the list
       # The auto-load when changing sheets might fail if sheet isn't ready
       updateTextInput(session, "new_sheet_name", value = "")
-      
+
       showNotification(
         "Refreshing sheet list... Select the new sheet from the dropdown.",
         type = "message",
@@ -158,10 +167,32 @@ server <- function(input, output, session) {
       }, once = TRUE)
 
     }, error = function(e) {
+      # Log detailed error information
+      cat("ERROR creating sheet:\n")
+      cat("Message:", e$message, "\n")
+      cat("Call:", deparse(e$call), "\n")
+      
+      error_display <- paste("Error creating sheet:", e$message)
+      
+      # Check if it's specifically about Drive permissions
+      if (grepl("403|PERMISSION_DENIED", e$message)) {
+        error_display <- paste0(
+          "Permission Denied (403)\n\n",
+          "The service account can read/write existing sheets but cannot create new ones.\n\n",
+          "This usually means:\n",
+          "- Service account has 'Viewer' or 'Editor' access to specific shared sheets\n",
+          "- But lacks permission to create files in Drive\n\n",
+          "Solutions:\n",
+          "1. Grant the service account 'Editor' role at PROJECT level in IAM\n",
+          "2. Or create sheets manually and share them with the service account\n\n",
+          "Original error: ", e$message
+        )
+      }
+      
       showNotification(
-        paste("Error creating sheet:", e$message),
+        error_display,
         type = "error",
-        duration = 10
+        duration = NULL
       )
     })
   })
