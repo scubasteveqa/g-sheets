@@ -11,7 +11,13 @@ if (creds_json != "") {
   # Write to temp file
   temp_key <- tempfile(fileext = ".json")
   writeLines(creds_json, temp_key)
-  
+
+  # Set gargle options (like customer.R does)
+  options(
+    gargle_oauth_cache = FALSE,
+    gargle_oauth_email = TRUE
+  )
+
   # Authenticate both services with the same path (like customer.R does)
   # This ensures both get the proper default scopes including drive.file
   drive_auth(path = temp_key)
@@ -46,13 +52,13 @@ ui <- page_sidebar(
 )
 
 server <- function(input, output, session) {
-  
+
   all_sheets <- reactiveVal(NULL)
   sheet_data <- reactiveVal(NULL)
   last_update <- reactiveVal(NULL)
   current_sheet_id <- reactiveVal(NULL)
   poll_trigger <- reactiveVal(0)
-  
+
   # Load list of accessible sheets
   load_sheet_list <- function() {
     tryCatch({
@@ -66,90 +72,34 @@ server <- function(input, output, session) {
       )
     })
   }
-  
-  # Read data using direct Google Sheets API v4 calls
+
+  # Read data using googlesheets4 (simplified to use global auth)
   read_sheet_data <- function() {
     req(current_sheet_id())
-    
+
     tryCatch({
-      # Get credentials from environment
-      creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
-      creds <- jsonlite::fromJSON(creds_json)
+      # Use the googlesheets4 package directly (it uses the global auth)
+      data <- read_sheet(current_sheet_id())
       
-      # Create OAuth token manually
-      token <- httr::oauth_service_token(
-        endpoint = httr::oauth_endpoints("google"),
-        secrets = creds,
-        scope = "https://www.googleapis.com/auth/spreadsheets"
-      )
-      
-      # Direct API call
-      api_url <- paste0(
-        "https://sheets.googleapis.com/v4/spreadsheets/",
-        current_sheet_id(),
-        "/values/A:Z"
-      )
-      
-      response <- httr::GET(
-        api_url,
-        httr::config(token = token)
-      )
-      
-      if (httr::status_code(response) == 200) {
-        content_data <- httr::content(response, "parsed")
-        
-        if (!is.null(content_data$values) && length(content_data$values) > 0) {
-          values <- content_data$values
-          
-          if (length(values) < 1) {
-            data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
-          } else {
-            headers <- unlist(values[[1]])
-            max_cols <- length(headers)
-            
-            if (length(values) == 1) {
-              data <- data.frame(matrix(ncol = max_cols, nrow = 0))
-              names(data) <- make.names(headers, unique = TRUE)
-            } else {
-              data_rows <- values[-1]
-              num_rows <- length(data_rows)
-              
-              data_matrix <- matrix("", nrow = num_rows, ncol = max_cols)
-              
-              for (i in seq_len(num_rows)) {
-                row <- unlist(data_rows[[i]])
-                if (length(row) > 0) {
-                  cols_to_fill <- min(length(row), max_cols)
-                  data_matrix[i, seq_len(cols_to_fill)] <- row[seq_len(cols_to_fill)]
-                }
-              }
-              
-              data <- as.data.frame(data_matrix, stringsAsFactors = FALSE)
-              names(data) <- make.names(headers, unique = TRUE)
-            }
-          }
-        } else {
-          data <- data.frame(NoData = "No values found", stringsAsFactors = FALSE)
-        }
-        
-        sheet_data(data)
-        last_update(Sys.time())
-        showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
-      } else {
-        error_msg <- httr::content(response, "text", encoding = "UTF-8")
-        stop(paste("API error:", httr::status_code(response), error_msg))
+      # Handle empty sheets
+      if (nrow(data) == 0) {
+        data <- data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE)
       }
-      
+
+      sheet_data(data)
+      last_update(Sys.time())
+      showNotification(paste("Data loaded! Rows:", nrow(data), "Columns:", ncol(data)), type = "message")
+
     }, error = function(e) {
       showNotification(paste("Error:", e$message), type = "error", duration = 10)
       sheet_data(data.frame(Error = e$message, stringsAsFactors = FALSE))
     })
   }
-  
+
   # Create new spreadsheet (using same approach as customer.R)
   observeEvent(input$create_sheet, {
     req(input$new_sheet_name)
-    
+
     tryCatch({
       # Check if sheet with this name already exists
       all_sheets_check <- gs4_find()
@@ -161,36 +111,36 @@ server <- function(input, output, session) {
         )
         return()
       }
-      
+
       # Create new sheet with template data (like customer.R does)
       initial_data <- data.frame(
         Column1 = character(0),
         Column2 = character(0),
         stringsAsFactors = FALSE
       )
-      
+
       new_sheet <- gs4_create(
         name = input$new_sheet_name,
         sheets = list("Sheet1" = initial_data)
       )
-      
+
       showNotification(
         paste("Sheet created successfully:", input$new_sheet_name),
         type = "message"
       )
-      
+
       # Set the new sheet as current
       current_sheet_id(new_sheet$spreadsheet_id)
-      
+
       # Clear input
       updateTextInput(session, "new_sheet_name", value = "")
-      
+
       # Refresh list after a delay
       invalidateLater(2000, session)
       observe({
         load_sheet_list()
       }, once = TRUE)
-      
+
     }, error = function(e) {
       showNotification(
         paste("Error creating sheet:", e$message),
@@ -203,17 +153,17 @@ server <- function(input, output, session) {
   # Poll for data updates with a delay
   poll_data <- function(delay_ms = 2000, max_attempts = 5) {
     attempt <- 0
-    
+
     poll_once <- function() {
       attempt <<- attempt + 1
-      
+
       invalidateLater(delay_ms, session)
-      
+
       if (attempt <= max_attempts) {
         read_sheet_data()
       }
     }
-    
+
     # Start first poll immediately
     invalidateLater(0, session)
     observe({
@@ -221,12 +171,12 @@ server <- function(input, output, session) {
       poll_once()
     })
   }
-  
+
   # Load sheets on startup
   observeEvent(TRUE, {
     load_sheet_list()
   }, once = TRUE)
-  
+
   # Auto-select first sheet after list loads
   observeEvent(all_sheets(), {
     req(all_sheets())
@@ -234,7 +184,7 @@ server <- function(input, output, session) {
       current_sheet_id(all_sheets()$id[1])
     }
   })
-  
+
   # Render sheet selector dropdown
   output$sheet_selector <- renderUI({
     req(all_sheets())
@@ -244,37 +194,37 @@ server <- function(input, output, session) {
       choices = setNames(all_sheets()$id, all_sheets()$name)
     )
   })
-  
+
   # Update current sheet ID when selection changes
   observeEvent(input$selected_sheet, {
     current_sheet_id(input$selected_sheet)
   })
-  
+
   # Auto-load data when sheet changes
   observeEvent(current_sheet_id(), {
     req(current_sheet_id())
     read_sheet_data()
   })
-  
+
   # Refresh sheet list button
   observeEvent(input$refresh_sheets, {
     load_sheet_list()
   })
-  
+
   # Reload button
   observeEvent(input$refresh_btn, {
     read_sheet_data()
   })
-  
+
   # Render input fields for adding a new row
   output$add_row_ui <- renderUI({
     req(sheet_data())
     cols <- names(sheet_data())
-    
+
     if (length(cols) == 0 || any(cols %in% c("Error", "NoData"))) {
       return(p("Load sheet data first to see input fields."))
     }
-    
+
     tagList(
       lapply(cols, function(col) {
         textInput(paste0("col_", col), label = col, value = "")
@@ -282,7 +232,7 @@ server <- function(input, output, session) {
       actionButton("add_row", "Add Row", class = "btn-success")
     )
   })
-  
+
   # Add new row to sheet with polling
   observeEvent(input$add_row, {
   req(sheet_data(), current_sheet_id())
@@ -326,12 +276,12 @@ server <- function(input, output, session) {
     )
   })
 })
-  
+
   # Display sheet data
   output$sheet_data <- renderTable({
     sheet_data()
   })
-  
+
   output$last_updated <- renderText({
     if (!is.null(last_update())) {
       paste("Last updated:", format(last_update(), "%Y-%m-%d %H:%M:%S"))
