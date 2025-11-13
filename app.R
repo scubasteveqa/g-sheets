@@ -8,8 +8,31 @@ creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
 if (creds_json != "") {
   temp_key <- tempfile(fileext = ".json")
   writeLines(creds_json, temp_key)
-  drive_auth(path = temp_key)
-  gs4_auth(token = drive_token())
+  
+  # Use broader scopes for authentication
+  options(
+    gargle_oauth_email = TRUE,
+    gargle_oauth_cache = FALSE
+  )
+  
+  # Authenticate with explicit scopes
+  drive_auth(
+    path = temp_key,
+    scopes = c(
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.file", 
+      "https://www.googleapis.com/auth/spreadsheets"
+    )
+  )
+  
+  gs4_auth(
+    path = temp_key,
+    scopes = c(
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets"
+    )
+  )
 }
 
 ui <- page_sidebar(
@@ -87,39 +110,25 @@ server <- function(input, output, session) {
     })
   }
 
-  # Try different creation methods based on authentication type
+  # Simplified sheet creation - only use gs4_create
   observeEvent(input$create_sheet, {
     req(input$new_sheet_name)
 
     tryCatch({
-      # Get service account email from credentials
-      creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
-      if (creds_json == "") {
-        stop("No service account credentials found")
-      }
-      
-      creds <- jsonlite::fromJSON(creds_json)
-      service_email <- creds$client_email
-      
+      # Only use gs4_create method - it's more reliable for service accounts
       if (!is.null(input$folder_id) && input$folder_id != "") {
-        # Method 1: Create in shared folder
-        new_file <- drive_create(
-          name = input$new_sheet_name,
-          type = "spreadsheet",
-          path = as_id(input$folder_id)
-        )
-        new_sheet_id <- as_id(new_file$id)
-      } else {
-        # Method 2: Create and then share with service account
+        # Create sheet then move to folder
         new_sheet_id <- gs4_create(name = input$new_sheet_name)
         
-        # Share the new sheet with the service account
-        drive_share(
-          file = new_sheet_id,
-          role = "writer",
-          type = "user",
-          emailAddress = service_email
-        )
+        # Try to move to folder
+        tryCatch({
+          drive_mv(file = new_sheet_id, path = as_id(input$folder_id))
+        }, error = function(e) {
+          showNotification("Sheet created but could not move to folder", type = "warning")
+        })
+      } else {
+        # Simple creation
+        new_sheet_id <- gs4_create(name = input$new_sheet_name)
       }
       
       # Add initial data
