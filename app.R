@@ -2,8 +2,6 @@ library(shiny)
 library(bslib)
 library(googlesheets4)
 library(googledrive)
-library(jsonlite)
-library(httr)
 
 # Authenticate with service account credentials from environment
 creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
@@ -19,8 +17,7 @@ ui <- page_sidebar(
   sidebar = sidebar(
     h4("Create New Sheet"),
     textInput("new_sheet_name", "Sheet Name", placeholder = "Enter new sheet name"),
-    textInput("folder_id", "Folder ID (optional)", 
-              placeholder = "Paste shared folder ID here"),
+    textInput("folder_id", "Folder ID (optional)", placeholder = "Paste shared folder ID here"),
     actionButton("create_sheet", "Create Sheet", class = "btn-success"),
     hr(),
     h4("Sheet Selection"),
@@ -48,57 +45,39 @@ server <- function(input, output, session) {
   last_update <- reactiveVal(NULL)
   current_sheet_id <- reactiveVal(NULL)
 
-  # Load list of accessible sheets
   load_sheet_list <- function() {
     tryCatch({
       sheets <- gs4_find()
       all_sheets(sheets)
       showNotification("Sheet list loaded!", type = "message")
     }, error = function(e) {
-      showNotification(
-        paste("Error loading sheets:", e$message),
-        type = "error"
-      )
+      showNotification(paste("Error loading sheets:", e$message), type = "error")
     })
   }
 
-  # Helper function to clean data for display
   clean_data_for_display <- function(data) {
     if (is.null(data) || nrow(data) == 0) {
       return(data.frame(NoData = "Sheet is empty", stringsAsFactors = FALSE))
     }
     
-    # Convert any list columns to character
     for (i in seq_along(data)) {
       if (is.list(data[[i]])) {
         data[[i]] <- sapply(data[[i]], function(x) {
-          if (is.null(x) || length(x) == 0) {
-            return("")
-          } else if (length(x) == 1) {
-            return(as.character(x))
-          } else {
-            return(paste(as.character(x), collapse = ", "))
-          }
+          if (is.null(x) || length(x) == 0) return("")
+          else if (length(x) == 1) return(as.character(x))
+          else return(paste(as.character(x), collapse = ", "))
         })
       }
-      # Ensure all columns are character for consistent display
       data[[i]] <- as.character(data[[i]])
     }
-    
     return(data)
   }
 
-  # Read data using googlesheets4
   read_sheet_data <- function() {
     req(current_sheet_id())
     tryCatch({
-      # Use col_types = "c" to force all columns to be character
-      # This prevents list column issues
       data <- read_sheet(current_sheet_id(), col_types = "c")
-      
-      # Clean the data for display
       data <- clean_data_for_display(data)
-      
       sheet_data(data)
       last_update(Sys.time())
       showNotification(paste("Data loaded! Rows:", nrow(data)), type = "message")
@@ -108,13 +87,22 @@ server <- function(input, output, session) {
     })
   }
 
-  # Create new spreadsheet with multiple approaches
+  # Try different creation methods based on authentication type
   observeEvent(input$create_sheet, {
     req(input$new_sheet_name)
 
     tryCatch({
-      # Method 1: Try creating in specified folder
+      # Get service account email from credentials
+      creds_json <- Sys.getenv("GOOGLE_CREDS_JSON")
+      if (creds_json == "") {
+        stop("No service account credentials found")
+      }
+      
+      creds <- jsonlite::fromJSON(creds_json)
+      service_email <- creds$client_email
+      
       if (!is.null(input$folder_id) && input$folder_id != "") {
+        # Method 1: Create in shared folder
         new_file <- drive_create(
           name = input$new_sheet_name,
           type = "spreadsheet",
@@ -122,61 +110,41 @@ server <- function(input, output, session) {
         )
         new_sheet_id <- as_id(new_file$id)
       } else {
-        # Method 2: Try creating with gs4_create (sometimes has different permissions)
-        new_sheet_id <- gs4_create(
-          name = input$new_sheet_name,
-          sheets = "Sheet1"
+        # Method 2: Create and then share with service account
+        new_sheet_id <- gs4_create(name = input$new_sheet_name)
+        
+        # Share the new sheet with the service account
+        drive_share(
+          file = new_sheet_id,
+          role = "writer",
+          type = "user",
+          emailAddress = service_email
         )
       }
       
-      # Add initial headers
+      # Add initial data
       initial_data <- data.frame(
         Column1 = character(0),
         Column2 = character(0),
         stringsAsFactors = FALSE
       )
       
-      sheet_write(
-        initial_data,
-        ss = new_sheet_id,
-        sheet = "Sheet1"
-      )
-
-      showNotification(
-        paste("Sheet created successfully:", input$new_sheet_name),
-        type = "message"
-      )
-
+      sheet_write(initial_data, ss = new_sheet_id, sheet = "Sheet1")
+      
+      showNotification(paste("Sheet created:", input$new_sheet_name), type = "message")
       current_sheet_id(new_sheet_id)
       updateTextInput(session, "new_sheet_name", value = "")
       
-      # Refresh list after delay
       invalidateLater(2000, session)
-      observe({
-        load_sheet_list()
-      }, once = TRUE)
+      observe({ load_sheet_list() }, once = TRUE)
 
     }, error = function(e) {
-      error_msg <- paste0(
-        "Failed to create sheet: ", e$message, "\n\n",
-        "Try these solutions:\n",
-        "1. Create a folder in Google Drive\n",
-        "2. Share it with your service account email\n", 
-        "3. Paste the folder ID in the 'Folder ID' field above\n",
-        "4. Or try using gs4_create() method by leaving folder ID empty\n\n",
-        "Service account needs 'Editor' permission on a shared folder or domain-wide delegation."
-      )
-      
-      showNotification(error_msg, type = "error", duration = NULL)
+      showNotification(paste("Failed to create sheet:", e$message), type = "error", duration = 10)
     })
   })
 
-  # Load sheets on startup
-  observeEvent(TRUE, {
-    load_sheet_list()
-  }, once = TRUE)
+  observeEvent(TRUE, { load_sheet_list() }, once = TRUE)
 
-  # Auto-select first sheet
   observeEvent(all_sheets(), {
     req(all_sheets())
     if (nrow(all_sheets()) > 0 && is.null(current_sheet_id())) {
@@ -184,28 +152,21 @@ server <- function(input, output, session) {
     }
   })
 
-  # Render sheet selector
   output$sheet_selector <- renderUI({
     req(all_sheets())
-    selectInput(
-      "selected_sheet",
-      "Select a Sheet:",
-      choices = setNames(all_sheets()$id, all_sheets()$name)
-    )
+    selectInput("selected_sheet", "Select a Sheet:",
+                choices = setNames(all_sheets()$id, all_sheets()$name))
   })
 
-  # Update current sheet ID
   observeEvent(input$selected_sheet, {
     current_sheet_id(input$selected_sheet)
   })
 
-  # Auto-load data when sheet changes
   observeEvent(current_sheet_id(), {
     req(current_sheet_id())
     read_sheet_data()
   })
 
-  # Refresh buttons
   observeEvent(input$refresh_sheets, {
     load_sheet_list()
   })
@@ -214,7 +175,6 @@ server <- function(input, output, session) {
     read_sheet_data()
   })
 
-  # Add row UI
   output$add_row_ui <- renderUI({
     req(sheet_data())
     cols <- names(sheet_data())
@@ -231,7 +191,6 @@ server <- function(input, output, session) {
     )
   })
 
-  # Add new row
   observeEvent(input$add_row, {
     req(sheet_data(), current_sheet_id())
 
@@ -250,37 +209,26 @@ server <- function(input, output, session) {
       new_row_df <- as.data.frame(new_row, stringsAsFactors = FALSE)
 
       sheet_append(current_sheet_id(), new_row_df)
-      showNotification("Row added! Refreshing data...", type = "message")
+      showNotification("Row added!", type = "message")
 
-      # Clear inputs
       lapply(cols, function(col) {
         updateTextInput(session, paste0("col_", col), value = "")
       })
 
-      # Refresh data after delay
       invalidateLater(2000, session)
-      observe({
-        read_sheet_data()
-      }, once = TRUE)
+      observe({ read_sheet_data() }, once = TRUE)
 
     }, error = function(e) {
       showNotification(paste("Error adding row:", e$message), type = "error")
     })
   })
 
-  # Display outputs - with safe error handling
   output$sheet_data <- renderTable({
     data <- sheet_data()
     if (is.null(data)) {
       return(data.frame(Status = "No data loaded", stringsAsFactors = FALSE))
     }
-    
-    # Extra safety check
-    tryCatch({
-      return(data)
-    }, error = function(e) {
-      return(data.frame(Error = paste("Display error:", e$message), stringsAsFactors = FALSE))
-    })
+    return(data)
   })
 
   output$last_updated <- renderText({
