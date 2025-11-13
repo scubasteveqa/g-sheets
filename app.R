@@ -19,7 +19,7 @@ ui <- page_sidebar(
   sidebar = sidebar(
     h4("Create New Sheet"),
     textInput("new_sheet_name", "Sheet Name", placeholder = "Enter new sheet name"),
-    textInput("folder_id", "1LYng2Z02LpD04E5qYIzeSaUEBeVs7ENU", 
+    textInput("folder_id", "Folder ID (optional)", 
               placeholder = "Paste shared folder ID here"),
     actionButton("create_sheet", "Create Sheet", class = "btn-success"),
     hr(),
