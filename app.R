@@ -12,8 +12,14 @@ if (creds_json != "") {
   temp_key <- tempfile(fileext = ".json")
   writeLines(creds_json, temp_key)
 
-  # Authenticate with path
-  drive_auth(path = temp_key)
+  # Authenticate with path - include all necessary scopes
+  drive_auth(
+    path = temp_key,
+    scopes = c(
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive.file"
+    )
+  )
   gs4_auth(token = drive_token())
 }
 
@@ -185,10 +191,24 @@ observeEvent(input$create_sheet, {
     }, once = TRUE)
 
   }, error = function(e) {
+    error_msg <- e$message
+    
+    # Provide helpful guidance for 403 errors
+    if (grepl("403|PERMISSION_DENIED", error_msg)) {
+      error_msg <- paste0(
+        "Permission Denied (403): Cannot create sheet.\n\n",
+        "Possible causes:\n",
+        "1. Google Drive API is not enabled in Google Cloud Console\n",
+        "2. Service account needs 'drive.file' scope\n",
+        "3. Re-publish the app after code changes\n\n",
+        "Original error: ", e$message
+      )
+    }
+    
     showNotification(
-      paste("Error creating sheet:", e$message),
+      error_msg,
       type = "error",
-      duration = 10
+      duration = NULL  # Don't auto-dismiss for debugging
     )
   })
 })
